@@ -13,6 +13,7 @@ import {
 } from './lib/store.js';
 import { TOOL_DEFS, TOOL_CATEGORY, runTool } from './lib/tools.js';
 import { callModel, PRESETS } from './lib/llm.js';
+import { verifyStep, checkDeliverables } from './lib/verify.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(__dirname, 'public');
@@ -106,17 +107,32 @@ function buildSystem(emp, cfg) {
 /* ── 任务执行：SSE 流出每一步 ── */
 async function runTask(task, emp, cfg, send, onFinish) {
   const t0 = Date.now();
-  const messages = [
-    { role: 'system', content: buildSystem(emp, cfg) },
-    { role: 'user', content: task.goal }
-  ];
-  let inTok = 0, outTok = 0;
+  // 断点续跑：上一轮的消息上下文还在，就从那里接着走，不从头再来
+  const resuming = Array.isArray(task.messages) && task.messages.length > 2;
+  const messages = resuming
+    ? task.messages
+    : [
+        { role: 'system', content: buildSystem(emp, cfg) },
+        { role: 'user', content: task.goal }
+      ];
+  let inTok = task.tokens?.in || 0, outTok = task.tokens?.out || 0;
   let status = 'done';
   let blockedCat = null;
+
+  // 预算闸：算钱，不按调用次数。超了就挂起，不让它继续烧
+  const budget = Number(cfg.budgetCNY) || 0;
+  const priceIn = Number(cfg.priceIn) || 0;
+  const priceOut = Number(cfg.priceOut) || 0;
+  const costOf = (i, o) => (i / 1e6) * priceIn + (o / 1e6) * priceOut;
 
   const sse = obj => { try { send(obj); } catch { /* 客户端断了 */ } };
 
   for (let step = 0; step < cfg.maxSteps; step++) {
+    if (budget > 0 && costOf(inTok, outTok) >= budget) {
+      status = 'budget_exceeded';
+      sse({ t: 'budget', spent: costOf(inTok, outTok), budget });
+      break;
+    }
     let r;
     try {
       r = await callModel({ provider: cfg.provider, messages, tools: TOOL_DEFS });
@@ -163,12 +179,21 @@ async function runTask(task, emp, cfg, send, onFinish) {
         workspace: cfg.workspace,
         onTodos: items => { task.todos = items; }
       });
+      // 后置校验：这一步是不是真做成了
+      const v = verifyStep(c.name, c.args, out, cfg.workspace);
       task.steps.push({
         i: step + 1, kind: 'tool', name: c.name, cat,
-        args: c.args, ok: out.ok, output: out.output, ms: out.ms, at: Date.now()
+        args: c.args, ok: out.ok, output: out.output, ms: out.ms, at: Date.now(),
+        verify: v
       });
-      sse({ t: 'step', kind: 'result', name: c.name, ok: out.ok, output: out.output, ms: out.ms });
-      messages.push({ role: 'tool', tool_call_id: c.id, content: out.output });
+      sse({ t: 'step', kind: 'result', name: c.name, ok: out.ok, output: out.output, ms: out.ms, verify: v });
+      // 校验没过：把失败原因回灌给模型，让它换路子，而不是继续往下演
+      messages.push({
+        role: 'tool', tool_call_id: c.id,
+        content: v.pass
+          ? out.output
+          : `${out.output}\n\n【校验未通过】${v.why}。这一步没有真正生效，请换一种做法重试，不要当作已完成。`
+      });
     }
     if (blocked && r.toolCalls.every(c => {
       const k = TOOL_CATEGORY[c.name] || 'exec';
@@ -182,9 +207,20 @@ async function runTask(task, emp, cfg, send, onFinish) {
   }
 
   if (blockedCat && status === 'done') status = 'blocked';
+
+  // 交付物校验：声明了要产出什么，就必须真有。
+  // 没有交付物的任务只能叫「它说做完了」，不能叫「已完成」。
+  const dv = checkDeliverables(task.deliverables, cfg.workspace);
+  task.deliverableCheck = dv;
+  task.verified = dv.checked ? dv.pass : null;
+  if (dv.checked && !dv.pass && (status === 'done' || status === 'blocked')) status = 'unverified';
+
   task.status = status;
   if (blockedCat) task.blockedOn = blockedCat;
+  // 断点续跑的依据：把这一轮的上下文留下来（截断尾部，别把 data 撑爆）
+  task.messages = messages.slice(-40);
   task.tokens = { in: inTok, out: outTok };
+  task.cost = costOf(inTok, outTok);
   task.ms = Date.now() - t0;
   onFinish(task);
   sse({ t: 'done', task });
@@ -242,7 +278,10 @@ const server = http.createServer(async (req, res) => {
           hasKey: !!cfg.provider.apiKey,
           permissions: cfg.permissions,
           workspace: cfg.workspace,
-          maxSteps: cfg.maxSteps
+          maxSteps: cfg.maxSteps,
+          budgetCNY: cfg.budgetCNY,
+          priceIn: cfg.priceIn,
+          priceOut: cfg.priceOut
         }
       });
     }
@@ -259,6 +298,9 @@ const server = http.createServer(async (req, res) => {
       }
       if (b.permissions) patch.permissions = b.permissions;
       if (b.maxSteps) patch.maxSteps = Math.min(Math.max(1, Number(b.maxSteps)), 24);
+      if (b.budgetCNY !== undefined) patch.budgetCNY = Math.max(0, Number(b.budgetCNY) || 0);
+      if (b.priceIn !== undefined) patch.priceIn = Math.max(0, Number(b.priceIn) || 0);
+      if (b.priceOut !== undefined) patch.priceOut = Math.max(0, Number(b.priceOut) || 0);
       const next = saveConfig(patch);
       return send(res, 200, { ok: true, permissions: next.permissions, provider: { ...next.provider, apiKey: '' } });
     }
@@ -308,10 +350,14 @@ const server = http.createServer(async (req, res) => {
       const emp = emps.find(e => e.id === b.employeeId) || emps[0];
       if (!emp) return send(res, 400, { ok: false, error: '还没有员工，先创建一个' });
       const tasks = listTasks();
+      const deliverables = Array.isArray(b.deliverables)
+        ? b.deliverables.map(s => String(s).trim()).filter(Boolean).slice(0, 20)
+        : [];
       const task = {
         id: 't' + Date.now().toString(36),
         title: String(b.title || goal.split('\n')[0].slice(0, 40)).trim(),
         goal,
+        deliverables,
         employeeId: emp.id, employeeName: emp.name, employeeRole: emp.role,
         status: 'queued', steps: [], result: '', tokens: { in: 0, out: 0 },
         createdAt: Date.now(), ms: 0
@@ -347,9 +393,13 @@ const server = http.createServer(async (req, res) => {
         });
         const sendEv = obj => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
-        // 重跑：清空上一轮轨迹
+        // 默认重跑；带 {resume:true} 则接着上一轮的上下文走
+        let body = {};
+        try { body = await readBody(req); } catch { /* 无 body 即重跑 */ }
+        const resuming = body && body.resume === true && Array.isArray(task.messages);
         task.steps = []; task.result = ''; task.status = 'running'; task.blockedOn = null;
-        sendEv({ t: 'start', taskId: task.id, employee: { name: emp.name, role: emp.role, model: emp.model || cfg.provider.model } });
+        if (!resuming) { task.messages = null; task.tokens = { in: 0, out: 0 }; }
+        sendEv({ t: 'start', taskId: task.id, resume: !!resuming, employee: { name: emp.name, role: emp.role, model: emp.model || cfg.provider.model } });
 
         await runTask(task, emp, cfg, sendEv, t => {
           const all = listTasks();

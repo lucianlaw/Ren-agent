@@ -110,7 +110,7 @@ function renderWho() {
 }
 
 /* ── 任务列表 ── */
-const ST = { queued: '待执行', running: '执行中', done: '已完成', blocked: '等授权', failed: '失败' };
+const ST = { queued: '待执行', running: '执行中', done: '已完成', blocked: '等授权', failed: '失败', unverified: '未验证', budget_exceeded: '超预算已停' };
 function renderTasks() {
   if (!state.tasks.length) {
     $('#taskList').innerHTML = `<div style="font-size:11.5px;color:#8f97a3;padding:10px 4px">还没有任务</div>`;
@@ -154,10 +154,23 @@ function renderTaskHead() {
   $('#taskTitle').textContent = t.title;
   $('#taskMeta').textContent = t.goal;
   const tok = t.tokens || { in: 0, out: 0 };
+  const cost = t.cost != null ? `¥${t.cost.toFixed(2)}` : '—';
   $('#taskStats').innerHTML = `
     <div class="stat"><b>${t.employeeName}</b><span>执行员工</span></div>
     <div class="stat"><b>${tok.in + tok.out || '—'}</b><span>tokens</span></div>
+    <div class="stat"><b>${cost}</b><span>本任务花费</span></div>
     <div class="stat"><b>${t.ms ? (t.ms / 1000).toFixed(1) + 's' : '—'}</b><span>耗时</span></div>`;
+  // 交付物校验：这是「完成」的唯一依据
+  const dv = t.deliverableCheck;
+  let dvHtml = '';
+  if (dv && dv.checked) {
+    dvHtml = `<div class="dv">${dv.detail.map(d =>
+      `<span class="dv-i ${d.ok ? '' : 'no'}">${d.ok ? '✓' : '✗'} ${esc(d.path)} · ${esc(d.why)}</span>`).join('')}</div>`;
+  } else if (t.deliverables && t.deliverables.length) {
+    dvHtml = `<div class="dv">${t.deliverables.map(p =>
+      `<span class="dv-i no">? ${esc(p)} · 本次未校验</span>`).join('')}</div>`;
+  }
+  $('#dvBox').innerHTML = dvHtml;
 }
 
 /* ── 轨迹渲染 ── */
@@ -200,8 +213,10 @@ function renderTrace() {
         <b>${esc(n.name)}</b>
         <span class="args">${esc(argsBrief(n.args))}</span>
         ${n.ms ? `<span class="ms">${n.ms}ms</span>` : ''}
+        ${n.verify && n.verify.pass === false ? `<span class="vf no">校验未过</span>` : ''}
         <span class="st ${n.ok === undefined ? 'pending' : n.ok ? 'ok' : 'no'}">${n.ok === undefined ? '…' : n.ok ? 'ok' : 'err'}</span>
       </div>
+      ${n.verify && n.verify.pass === false ? `<div class="vwhy">✗ ${esc(n.verify.why)}</div>` : ''}
       ${n.output && open ? `<div class="node-b"><pre>${esc(n.output)}</pre></div>` : ''}
     </div>`;
   });
@@ -291,7 +306,10 @@ function handleEvent(ev) {
     renderTrace();
   } else if (ev.t === 'step' && ev.kind === 'result') {
     const n = tr.nodes[tr.nodes.length - 1];
-    if (n && n.name === ev.name) { n.ok = ev.ok; n.output = ev.output; n.ms = ev.ms; }
+    if (n && n.name === ev.name) { n.ok = ev.ok; n.output = ev.output; n.ms = ev.ms; n.verify = ev.verify; }
+    renderTrace();
+  } else if (ev.t === 'budget') {
+    tr.result = (tr.result ? tr.result + '\n\n' : '') + `已停：本任务花到 ¥${ev.spent.toFixed(2)}，超过上限 ¥${ev.budget}。提高上限后可继续。`;
     renderTrace();
   } else if (ev.t === 'text') {
     tr.result = ev.content;
