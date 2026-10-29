@@ -19,6 +19,11 @@ const PUBLIC = path.join(__dirname, 'public');
 const PORT = Number(process.env.PORT || 4319);
 const TOKEN = ensureToken();
 
+/* 免口令模式：只在「自己一个人的机器上」用。
+   开启方式：node server.js --no-auth  或  NO_AUTH=1 node server.js
+   它关掉的只有口令这一道闸，Host / Origin 校验和 127.0.0.1 绑定照旧。 */
+const NO_AUTH = process.argv.includes('--no-auth') || process.env.NO_AUTH === '1';
+
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8',
@@ -66,6 +71,7 @@ function originOK(req) {
 }
 
 function authed(req) {
+  if (NO_AUTH) return true;
   const h = req.headers['x-token'];
   if (h && h === TOKEN) return true;
   const cookie = req.headers.cookie || '';
@@ -207,7 +213,7 @@ const server = http.createServer(async (req, res) => {
 
     if (u.pathname === '/api/auth' && req.method === 'POST') {
       const b = await readBody(req);
-      if (b.token !== TOKEN) {
+      if (!NO_AUTH && b.token !== TOKEN) {
         await new Promise(r => setTimeout(r, 400)); // 拖慢暴力尝试
         return send(res, 401, { ok: false, error: '口令不对' });
       }
@@ -223,6 +229,7 @@ const server = http.createServer(async (req, res) => {
       const cfg = getConfig();
       return send(res, 200, {
         ok: true,
+        noAuth: NO_AUTH,
         employees: listEmployees(),
         tasks: listTasks().map(t => ({
           id: t.id, title: t.title, status: t.status, employeeName: t.employeeName,
@@ -367,12 +374,17 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log('');
   console.log('  Boss Agent 内核 v0.1 已启动');
   console.log('  ────────────────────────────────────────────');
-  console.log('  打开：  ' + base);
-  console.log('  口令：  ' + TOKEN);
+  console.log('  打开：  ' + (NO_AUTH ? `http://localhost:${PORT}` : base));
+  console.log('  口令：  ' + (NO_AUTH ? '已关闭（免口令模式）' : TOKEN));
   console.log('  工作区：' + cfg.workspace);
   console.log('  模型：  ' + (cfg.provider.preset === 'mock' || !cfg.provider.baseURL
     ? '离线 Mock（在设置里换成真实基座）'
     : cfg.provider.baseURL + ' · ' + cfg.provider.model));
   console.log('  数据：  ' + DATA_DIR);
+  if (NO_AUTH) {
+    console.log('');
+    console.log('  ⚠ 免口令模式：任何能访问 127.0.0.1 的程序都能直接操作这个内核。');
+    console.log('    自己一个人用没问题，一旦要分享、或装到别人机器上，去掉 --no-auth。');
+  }
   console.log('');
 });

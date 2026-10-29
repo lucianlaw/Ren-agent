@@ -444,10 +444,7 @@ document.addEventListener('click', e => {
     localStorage.setItem('bat', q.get('token'));
     history.replaceState({}, '', '/');
   }
-  if (localStorage.getItem('bat')) {
-    $('#login').hidden = true; $('#app').hidden = false;
-    boot().catch(() => { showLogin(); });
-  } else {
-    showLogin();
-  }
+  // 免口令模式下内核直接放行，这里先乐观放行，真被拒再退回登录页
+  $('#login').hidden = true; $('#app').hidden = false;
+  boot().catch(() => { showLogin(); });
 })();
