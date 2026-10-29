@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Boss Agent · 内核 v0.1</title>
+<link rel="stylesheet" href="./app.css">
+</head>
+<body>
+
+<!-- 登录 -->
+<div class="login" id="login">
+  <div class="login-card">
+    <div class="brand-lg">Boss Agent</div>
+    <p class="login-sub">本机内核 · 输入启动时打印的口令</p>
+    <input id="tokenInput" type="password" placeholder="口令" autocomplete="off">
+    <button class="btn primary w100" id="loginBtn">进入</button>
+    <p class="login-hint" id="loginHint">口令在终端里，形如 <code>口令：xxxxxxxx</code></p>
+  </div>
+</div>
+
+<!-- 主界面 -->
+<div class="app" id="app" hidden>
+  <header class="topbar">
+    <div class="brand">Boss&nbsp;Agent <span class="ver">v0.1</span></div>
+    <div class="top-right">
+      <span class="model-pill" id="modelPill">离线 Mock</span>
+      <div class="perm-group" id="permGroup">
+        <button class="perm" data-cat="read">读文件</button>
+        <button class="perm" data-cat="write">写文件</button>
+        <button class="perm" data-cat="exec">跑命令</button>
+      </div>
+      <button class="btn ghost" id="settingsBtn">模型设置</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="rail">
+      <div class="rail-head">
+        <span>任务池</span>
+        <button class="btn tiny" id="newTaskBtn">+ 新建</button>
+      </div>
+      <div class="task-list" id="taskList"></div>
+    </aside>
+
+    <main class="main">
+      <header class="task-head">
+        <div class="th-left">
+          <h1 id="taskTitle">还没有任务</h1>
+          <div class="th-meta" id="taskMeta">在下面交代第一件事，或者点左上角「+ 新建」</div>
+        </div>
+        <div class="th-right" id="taskStats"></div>
+      </header>
+
+      <div class="trace" id="trace">
+        <div class="empty" id="emptyState">
+          <div class="empty-t">这里会显示每一步</div>
+          <div class="empty-d">员工调用了哪个工具、参数是什么、返回了什么、花了多久——都摊开给你看，不藏在对话里。</div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <div class="composer-row">
+          <span class="who" id="whoLabel">交给 周砚</span>
+          <textarea id="goal" rows="1" placeholder="交代一件事。例如：看看工作目录里有什么，把结构说明写进 notes.md"></textarea>
+          <button class="btn primary" id="runBtn">执行</button>
+        </div>
+        <div class="composer-hint">⌘ + Enter 执行 · 路径都相对工作目录 · 红线的活只出方案不动手</div>
+      </div>
+    </main>
+
+    <aside class="rail right">
+      <div class="rail-head">
+        <span>员工</span>
+        <button class="btn tiny" id="newEmpBtn">+ 新建</button>
+      </div>
+      <div class="emp-list" id="empList"></div>
+      <div class="rail-foot"><span id="wsLabel"></span></div>
+    </aside>
+  </div>
+</div>
+
+<!-- 新建员工 -->
+<div class="mask" id="empModal" hidden>
+  <div class="modal">
+    <h3>新建员工</h3>
+    <p class="sub">员工 = 岗位 + 人设 + 一个可随时替换的模型基座。</p>
+    <label class="f">名字<input id="empName" placeholder="例如：周砚"></label>
+    <label class="f">岗位<input id="empRole" placeholder="例如：法务 / 财务 / 研究"></label>
+    <label class="f">说话风格
+      <div class="persona-grid" id="personaGrid"></div>
+    </label>
+    <label class="f">交给它的额外说明（可空）
+      <textarea id="empNotes" rows="2" placeholder="例如：我们的合同都用我方模板；报价必须含税"></textarea>
+    </label>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close>取消</button>
+      <button class="btn primary" id="empSave">让它上岗</button>
+    </div>
+  </div>
+</div>
+
+<!-- 模型设置 -->
+<div class="mask" id="setModal" hidden>
+  <div class="modal">
+    <h3>模型基座</h3>
+    <p class="sub">业务代码只说 OpenAI 协议，换一家只改这里。Key 只存在本机 data/config.json。</p>
+    <label class="f">选择服务商
+      <select id="presetSel"></select>
+    </label>
+    <label class="f">baseURL<input id="baseURL" placeholder="https://api.deepseek.com/v1"></label>
+    <label class="f">API Key<input id="apiKey" type="password" placeholder="sk-…"></label>
+    <label class="f">模型名<input id="modelName" placeholder="deepseek-chat"></label>
+    <label class="f">单任务最多几步<input id="maxSteps" type="number" min="1" max="24" value="12"></label>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close>取消</button>
+      <button class="btn primary" id="setSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="./app.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+# 运行时数据：口令、会话、API Key、员工、任务轨迹
+data/
+
+# 工作区：用户在里面的文件不进仓库，只保留说明
+workspace/*
+!workspace/README.md
+
+node_modules/
+.DS_Store
+*.log
+.env

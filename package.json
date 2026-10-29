@@ -1,0 +1,10 @@
+{
+  "name": "boss-agent-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "单用户本地 agent 内核：员工 + 模型基座 + 执行轨迹",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
