@@ -229,7 +229,10 @@ async function main() {
     ok('游客回退到本地执行（否则游客彻底不能用）',
       /if \(state\.guest \|\| !state\.session\)/.test(appSrc) && /return BOSS\.run\(job\)/.test(appSrc));
     ok('停止会通知服务端', /function agentStop\(\)[\s\S]{0,120}srvAction\('\/stop'/.test(appSrc));
-    ok('插话会通知服务端', /function agentInject\([\s\S]{0,200}srvAction\('\/inject'/.test(appSrc));
+    ok('插话会通知服务端', /function agentInject\([\s\S]{0,600}srvAction\('\/inject'/.test(appSrc));
+    /* 插话带的图只能传路径：这条请求体塞 base64 一样会被网关拦（403），
+       而拦下来界面还显示「已插给员工」，图就静默丢了 */
+    ok('插话带的图只传路径', /srvAction\('\/inject',\s*\{\s*text,\s*images:\s*slimFiles\(images\)\s*\}\)/.test(appSrc));
     ok('审批会通知服务端', /function agentApprove\([\s\S]{0,150}srvAction\('\/approve'/.test(appSrc));
     ok('忙碌时挂到已有任务上', /code === 'busy'[\s\S]{0,120}attachServerRun/.test(appSrc));
     ok('SSE 按 \\n\\n 切帧', /indexOf\('\\n\\n'\)/.test(appSrc));

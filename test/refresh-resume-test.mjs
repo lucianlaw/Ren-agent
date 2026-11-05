@@ -240,7 +240,11 @@ ok('hello 带 startedAt', /startedAt:\s*run\.startedAt/.test(serverSrc));
 
 /* ══ 7. 源码兜底：新任务的第一句当场进存档 ══ */
 ok('新任务 draft 里就带上 userMsgs',
-  /userMsgs:\s*\[\{\s*text,\s*at:\s*0,\s*round:\s*1\s*\}\]/.test(src));
+  /userMsgs:\s*\[\{\s*text,\s*at:\s*0,\s*round:\s*1,\s*imgs:/.test(src));
+/* 附件的 base64 绝不能进存档：几张截图就是几 MB，createTask / saveTask 会被
+   前置网关拦（403），界面上表现为「任务存不上」。图留在工作区，只存路径。 */
+ok('新任务存档里的附件不留 base64',
+  /files:\s*slimFiles\(atts\)/.test(src) && /dataUrl:\s*null,\s*thumb:\s*null/.test(src));
 
 console.log(`\n${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

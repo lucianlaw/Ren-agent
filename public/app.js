@@ -5116,9 +5116,12 @@ function asksOf(t) {
   const asks = raw.map((u, i) => (u && typeof u === 'object')
     ? {
       text: String(u.text || '').trim(), at: Math.max(0, Number(u.at) || 0),
-      _i: i, inline: !!u.inline, said: Math.floor(Number(u.round) || 0)
+      _i: i, inline: !!u.inline, said: Math.floor(Number(u.round) || 0),
+      /* 这句话带了几张图（只留路径）。归一化时不能丢——丢了气泡里就只剩
+         「（附 2 张截图）」这一行字，老板会以为图没发出去。 */
+      imgs: Array.isArray(u.imgs) ? u.imgs : []
     }
-    : { text: String(u || '').trim(), at: 0, _i: i, inline: false, said: 0 })
+    : { text: String(u || '').trim(), at: 0, _i: i, inline: false, said: 0, imgs: [] })
     .filter(a => a.text);
   if (!asks.length && t && t.goal) {
     asks.push({ text: String(t.goal).trim(), at: 0, _i: 0, inline: false, said: 1 });
@@ -5194,15 +5197,22 @@ function syncRounds(t) {
   }
   if (Array.isArray(t.userMsgs) && t.userMsgs.length) {
     const want = asks.map(a => (a.inline
-      ? { text: a.text, at: a.at, round: a.round, inline: true }
-      : { text: a.text, at: a.at, round: a.round }));
+      ? { text: a.text, at: a.at, round: a.round, inline: true, imgs: a.imgs }
+      : { text: a.text, at: a.at, round: a.round, imgs: a.imgs }));
     /* 归一化只在「真的变了」的时候替换：renderTrace 每帧都会走到这里，
        无条件换数组会让所有持有旧引用的地方（runCtx、落库节流）看到两份数据 */
+    const samePaths = (o, w) => {
+      const a = Array.isArray(o) ? o : [];
+      const b = Array.isArray(w) ? w : [];
+      if (a.length !== b.length) return false;
+      return a.every((x, i) => String((x && x.path) || x || '') === String((b[i] && b[i].path) || b[i] || ''));
+    };
     const same = want.length === t.userMsgs.length && want.every((w, i) => {
       const o = t.userMsgs[i];
       return o && String(o.text || '') === w.text
         && (Math.floor(Number(o.round) || 0)) === w.round
-        && !!o.inline === !!w.inline;
+        && !!o.inline === !!w.inline
+        && samePaths(o.imgs, w.imgs);
     });
     if (!same) t.userMsgs = want;
   }
@@ -5219,6 +5229,9 @@ function roundsList(t, n) {
     ? ums0
     : [{ text: String(t.goal).trim(), round: 1 }];
   const list = [];
+  /* 老任务没有 imgs 字段（这个字段是本版才加的），但它们的第一轮附件还在
+     task.files 里。不补这一档，老板升级后再看历史对话，图依然是看不见的。 */
+  const firstImgs = (t && Array.isArray(t.files)) ? imgPathsOf(t.files) : [];
   for (let r = 1; r <= n; r++) {
     const tools = steps.filter(s => s && s.kind === 'tool' && (Number(s.round) || 1) === r);
     const saysR = steps.filter(s => s && s.kind === 'say' && (Number(s.round) || 1) === r);
@@ -5229,7 +5242,15 @@ function roundsList(t, n) {
       /* asks 只给文字（决策卡、待办、导出这些老地方按字符串用）；
          askItems 多带一个 inline 标记，界面上要把「中途补充」和「这一轮的问话」分开 */
       asks: umR.map(u => String((u && u.text) || '')),
-      askItems: umR.map(u => ({ text: String((u && u.text) || ''), inline: !!(u && u.inline) })),
+      /* imgs 只放路径（几十字节）：气泡里要看得见图，就不能只写一句「附 2 张截图」 */
+      askItems: umR.map((u, i) => {
+        const own = (u && Array.isArray(u.imgs)) ? u.imgs : [];
+        return {
+          text: String((u && u.text) || ''),
+          inline: !!(u && u.inline),
+          imgs: (own.length || r !== 1 || i !== 0) ? own : firstImgs
+        };
+      }),
       tools,
       /* result 留作兼容（拍板卡、交接这些地方还读它）；界面渲染走 says 全量 */
       result: (say && say.text) || '',
@@ -5405,11 +5426,66 @@ function filesBlockHTML(files, t, tr) {
 }
 
 /* 已经结束的那种「一轮」：步骤默认收起来，回答和产出直接摊在外面 */
+/* ── 图片放大 ──
+   输入区的待发图和对话框里已经发出去的图，点击都是这一层。
+   不跳页、不开新窗口：老板要的只是看清图里那一行字，看完点一下就走。 */
+function imgSrcOf(p) {
+  const q = '/api/raw?scope=' + encodeURIComponent(state.scope || '') + '&path=' + encodeURIComponent(String(p || ''));
+  return window.withSC ? window.withSC(q) : q;
+}
+function openImgBox(src) {
+  if (!src) return;
+  let box = document.getElementById('imgBox');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'imgBox';
+    box.className = 'img-box';
+    box.innerHTML = '<img alt=""><b class="img-x" title="关闭（Esc）">×</b>';
+    document.body.appendChild(box);
+    box.addEventListener('click', () => box.classList.remove('on'));
+    box.querySelector('img').addEventListener('click', e => e.stopPropagation());
+  }
+  box.querySelector('img').src = src;
+  box.classList.add('on');
+}
+function closeImgBox() {
+  const box = document.getElementById('imgBox');
+  if (box) box.classList.remove('on');
+}
+/* 附件 → 对话气泡要记住的图片清单：**只留路径和名字**。
+   一张 700KB 的 dataURL 存进 userMsgs，会被一起送进 /api/run 并落库，
+   既撑爆请求体（403），也让存档变成几 MB。图本来就在工作区。 */
+function imgPathsOf(list) {
+  return (Array.isArray(list) ? list : [])
+    .filter(x => x && x.path && (x.dataUrl || x.thumb || /^image\//i.test(String(x.mime || ''))
+      || /\.(png|jpe?g|webp|gif|bmp)$/i.test(String(x.path))))
+    .map(x => ({ path: String(x.path), name: String(x.name || '') }));
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeImgBox(); });
+/* 任何带 data-imgbox 的图（气泡里的、产出卡片上的）点了都放大 */
+document.addEventListener('click', e => {
+  const t = e.target && e.target.closest ? e.target.closest('[data-imgbox]') : null;
+  if (!t) return;
+  e.preventDefault();
+  openImgBox(t.getAttribute('data-imgbox'));
+});
+
 /* 老板说的话：历史轮和当前轮用同一套渲染，位置和样式才不会有「刚才在这、一会儿没了」 */
-function msgMeHTML(text, inline) {
+function msgMeHTML(text, inline, imgs) {
+  /* 已经发出去的图要看得见：只存路径，不存 base64——几 MB 的 dataURL 存进
+     userMsgs 会被一起送去 /api/run，那就是 403 的来源。图在工作区里，按路径取。 */
+  const pics = (Array.isArray(imgs) ? imgs : [])
+    .map(x => (typeof x === 'string' ? { path: x } : x))
+    .filter(x => x && x.path);
+  const strip = pics.length
+    ? `<div class="bub-pics">${pics.map(p => {
+      const src = imgSrcOf(p.path);
+      return `<img class="bub-pic" src="${esc(src)}" alt="${esc(p.name || '图片')}" data-imgbox="${esc(src)}" loading="lazy">`;
+    }).join('')}</div>`
+    : '';
   return `<div class="msg me${inline ? ' sup' : ''}">`
     + (inline ? '<span class="me-tag">补充</span>' : '')
-    + `<div class="bub">${esc(text)}</div><span class="ava">我</span></div>`;
+    + `<div class="bub">${strip}${esc(text)}</div><span class="ava">我</span></div>`;
 }
 
 function turnHTML(R, t) {
@@ -5421,8 +5497,8 @@ function turnHTML(R, t) {
   let h = `<div class="turn" data-turn="${R.round}">`;
   const askItems = (R.askItems && R.askItems.length)
     ? R.askItems
-    : (R.asks || []).map(x => ({ text: x, inline: false }));
-  for (const a of askItems) h += msgMeHTML(a.text, a.inline);
+    : (R.asks || []).map(x => ({ text: x, inline: false, imgs: [] }));
+  for (const a of askItems) h += msgMeHTML(a.text, a.inline, a.imgs);
   if (tools.length) {
     h += `<div class="turn-bar" data-turn-toggle="${R.round}">
       <span class="caret">${open ? '▾' : '▸'}</span>
@@ -5526,11 +5602,11 @@ function renderTrace(noScroll) {
   /* 当前轮的问话带上 inline 标记（中途补充和这一轮的问话要能分出来），
      再加「刚发出去、还没落进 userMsgs」的那一句 */
   const curItems = (curTurn.askItems && curTurn.askItems.length)
-    ? curTurn.askItems.map(x => ({ text: x.text, inline: !!x.inline }))
-    : (curTurn.asks || []).map(x => ({ text: x, inline: false }));
+    ? curTurn.askItems.map(x => ({ text: x.text, inline: !!x.inline, imgs: x.imgs || [] }))
+    : (curTurn.asks || []).map(x => ({ text: x, inline: false, imgs: [] }));
   if (tr.userMsg) {
     const txt = String(tr.userMsg).trim();
-    if (txt && !curItems.some(a => a.text === txt)) curItems.push({ text: txt, inline: false });
+    if (txt && !curItems.some(a => a.text === txt)) curItems.push({ text: txt, inline: false, imgs: [] });
   }
   const running = tr.status === 'running' || !!(t && t.status === 'running');
   if (!tr.nodes.length && !tr.result && !running && !curItems.length && !hist.length) {
@@ -5546,7 +5622,7 @@ function renderTrace(noScroll) {
 
   /* ── 当前这一轮 ── */
   html += `<div class="turn cur" data-turn="${curR}">`;
-  for (const a of curItems) html += msgMeHTML(a.text, a.inline);
+  for (const a of curItems) html += msgMeHTML(a.text, a.inline, a.imgs);
   /* 预算续杯：到线了不是只能去设置里改 */
   if (tr.status === 'budget_exceeded' || (t && t.status === 'budget_exceeded')) {
     html += `<div class="alert"><div class="grow">token 到上限了，任务停在这里。再给 10 万可以从断点接着跑。</div>
@@ -6036,7 +6112,9 @@ function agentInject(text, images) {
     if (window.BOSS && BOSS.inject) BOSS.inject(text, images);
     return Promise.resolve(true);
   }
-  return srvAction('/inject', { text, images }).then(j => {
+  /* 走服务端的插话只传路径：这条请求体里塞 base64 同样会被网关拦，
+     拦下来表现成「已插给员工」，其实那句话和图谁也没收到。 */
+  return srvAction('/inject', { text, images: slimFiles(images) }).then(j => {
     if (j && j.ok) return true;
     /* 服务端说这条任务已经结束了（runId 失效 / 404）：这一轮是真的没了。
        不能假装插进去了——老板会看到「已插给员工」，而那句话谁也没收到，
@@ -6170,6 +6248,9 @@ function slimText(s, head, tail) {
 }
 function slimMessages(list, level) {
   const arr = Array.isArray(list) ? list : [];
+  /* level = -1 是「只摘图」档：图片 base64 一定要摘（体积），但一个字都不许砍——
+     砍正文是有损的，只在请求体真的过大时才做。 */
+  const onlyImg = level === -1;
   const head = level >= 2 ? 160 : 700;
   const tail = level >= 2 ? 0 : 220;
   const keepTail = level >= 2 ? 2 : 3;
@@ -6182,14 +6263,20 @@ function slimMessages(list, level) {
     const out = { ...m };
     if (typeof out.content === 'string') {
       /* 最后几条可能是老板刚说的这句指令，本来就短，原样留着 */
-      out.content = (near && out.content.length < 6000) ? out.content : slimText(out.content, head, tail);
+      if (!onlyImg) out.content = (near && out.content.length < 6000) ? out.content : slimText(out.content, head, tail);
     } else if (Array.isArray(out.content)) {
-      out.content = out.content.map(c => (c && c.type === 'text')
-        ? { ...c, text: slimText(c.text, head, tail) } : c);
+      out.content = out.content.map(c => {
+        if (!c || typeof c !== 'object') return c;
+        if (c.type === 'text') return onlyImg ? c : { ...c, text: slimText(c.text, head, tail) };
+        /* 多模态 part 里的 base64：一张图几百 KB，历史里留几张就能把请求体顶过网关上限。
+           图还在工作区，路径写在正文里，模型要看自己调 view_image。 */
+        if (c.type === 'image_url') return { type: 'text', text: '（这里原本附了一张图，已从上下文摘掉；路径见上文，要看就调 view_image）' };
+        return c;
+      });
     }
     /* 写文件的工具调用：整份文件内容就在 arguments 里。已经执行完了，
        历史里再留全文只是给网关递刀。 */
-    if (Array.isArray(out.tool_calls)) {
+    if (!onlyImg && Array.isArray(out.tool_calls)) {
       out.tool_calls = out.tool_calls.map(tc => {
         const a = tc && tc.function && tc.function.arguments;
         if (typeof a !== 'string' || a.length <= 1000) return tc;
@@ -6199,16 +6286,37 @@ function slimMessages(list, level) {
     return out;
   });
 }
-/* 图片是 dataURL，一张顶几百 KB 文字。去掉 base64 但**保留路径**：
-   view_image 靠路径就能看图，主模型也能在工作区读到它。 */
+/* 图片是 dataURL，一张顶几百 KB 文字。**无条件**摘掉 base64，只留路径：
+   体积问题不是「大了才处理」，而是「一有图就超标」——一次发三张截图，
+   请求体就是 2MB，前置网关必拦（403），而前端只能看到一句「服务端拒绝了这次执行」。
+   服务端拿到路径会自己去工作区读回来补给视觉模型（见 server.js hydrateImages），
+   所以这里摘掉不影响「员工看得见图」。thumb 也是 dataURL，一起摘。 */
+function slimFiles(list) {
+  return (Array.isArray(list) ? list : []).map(x => {
+    if (!x || typeof x !== 'object') return x;
+    if (!x.dataUrl && !x.thumb) return x;
+    return { ...x, dataUrl: null, thumb: null };
+  });
+}
 function slimRunPayload(payload, level) {
+  const p = stripImages(payload);
+  const q = { ...p };
+  if (q.task && typeof q.task === 'object') {
+    q.task = { ...q.task, messages: slimMessages(p.task.messages, level) };
+  }
+  return q;
+}
+/* 只摘图，不动任何文字。用于「每次请求都做」的那一档。 */
+function stripImages(payload) {
   const p = { ...payload };
   if (p.task && typeof p.task === 'object') {
-    p.task = { ...p.task, messages: slimMessages(p.task.messages, level) };
+    p.task = {
+      ...p.task,
+      messages: slimMessages(p.task.messages, -1),
+      files: slimFiles(p.task.files)
+    };
   }
-  if (Array.isArray(p.followUpImages)) {
-    p.followUpImages = p.followUpImages.map(x => (x && x.dataUrl) ? { ...x, dataUrl: '' } : x);
-  }
+  p.followUpImages = slimFiles(p.followUpImages);
   return p;
 }
 const payloadKB = p => Math.round(JSON.stringify(p).length / 1024);
@@ -6246,10 +6354,11 @@ async function agentRun(job) {
     visionModels: pickVisionModels(),
     tools: Array.isArray(window.CUSTOM_TOOLS) ? window.CUSTOM_TOOLS : []
   };
-  /* 体积先看一眼：与其发出去被网关挡一次、再瘦身重试（老板白等两个来回），
-     不如第一发就瘦。四百多 KB 的请求体在这条网关后面基本必被拦。 */
-  let body = payload;
-  const kb0 = payloadKB(payload);
+  /* 第一发就摘图：base64 是**一定**要摘的（一次发三张截图就是 2MB，必被网关拦），
+     不是「大了才摘」。摘图是无损的——路径还在，服务端会自己读回来。
+     体积仍然过大（历史里堆了大段代码）才继续砍正文。 */
+  let body = stripImages(payload);
+  const kb0 = payloadKB(body);
   if (kb0 > 420) {
     body = slimRunPayload(payload, 1);
     toast(`这次上下文里有大段代码（${kb0}KB），已精简到 ${payloadKB(body)}KB 再发；完整内容还在工作区文件里`);
@@ -6374,7 +6483,8 @@ async function runGoal(goal, existingTaskId) {
           text: text2 + (imgs.length ? `（附 ${imgs.length} 张截图）` : '')
             + (docs.length ? `（附 ${docs.length} 个文件）` : ''),
           at: (live.nodes || []).length,
-          round: Number(live.round) || 1, inline: true
+          round: Number(live.round) || 1, inline: true,
+          imgs: imgPathsOf(imgs)
         });
       }
       $('#goal').value = '';
@@ -6518,7 +6628,8 @@ async function runGoal(goal, existingTaskId) {
       task.userMsgs.push({
         text: followUp,
         at: (task.steps || []).filter(s => s.kind === 'tool').length,
-        round: nextR
+        round: nextR,
+        imgs: imgPathsOf(followImgs)
       });
     }
     task.status = 'running';
@@ -6540,8 +6651,10 @@ async function runGoal(goal, existingTaskId) {
       /* 第一句原话必须当场进存档：以前只在跑完的 finally 里落库，
          「正在分析」时刷新 → 云端 user_msgs 还是空的 → 回来就只剩一个空壳，
          老板看到的正是「我发的文字不展示了」。 */
-      userMsgs: [{ text, at: 0, round: 1 }],
-      files: atts,
+      userMsgs: [{ text, at: 0, round: 1, imgs: imgPathsOf(atts) }],
+      /* 存档里不留 base64：几 MB 的图既撑爆 createTask 的请求体，
+         也让「刷新后重新拉任务」变成拉一份图库。图在工作区，路径就够。 */
+      files: slimFiles(atts),
       deliverables: parseDeliverables($('#deliverables').value),
       employeeId: staff.id, employeeName: staff.name, employeeRole: staff.role,
       status: 'running', steps: [], result: '', messages: null,
@@ -6561,6 +6674,9 @@ async function runGoal(goal, existingTaskId) {
     } else {
       task = { ...draft, id: 'local_' + draft.id };
     }
+    /* 内存里留完整附件（含 dataURL）：游客态和「在本机直接跑」要靠它把图交给模型；
+       发服务端时 stripImages 会先摘掉 base64，落库也从不写 files，所以不会撑大请求。 */
+    task.files = atts;
     state.tasks.unshift(task);
     state.curTaskId = task.id;
     state.drafting = false;

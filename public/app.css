@@ -220,7 +220,10 @@ body.resizing,body.resizing *{cursor:col-resize!important;user-select:none!impor
 .emp-sel:focus{outline:none;color:var(--blue)}
 
 /* ── 主区 ── */
-.main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
+/* min-height:0 这两处不是装饰：flex 纵向子项默认 min-height:auto，内容一多就不肯收缩，
+   于是 .trace 被内容撑高、把下面的输入框整块顶出视口——表现正是「输入框没了 / 打不了字」。
+   第 5 轮之后内容变长才开始复现，所以很容易被当成偶发。 */
+.main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--bg)}
 .task-head{
   flex:0 0 auto;padding:14px var(--head-pad) 12px;background:#fff;border-bottom:1px solid var(--line);
   display:flex;justify-content:space-between;align-items:flex-start;gap:16px;
@@ -258,7 +261,7 @@ body.resizing,body.resizing *{cursor:col-resize!important;user-select:none!impor
 .stat b{display:block;font-size:13px;font-weight:500;font-variant-numeric:tabular-nums}
 .stat span{font-size:9.5px;color:var(--mute)}
 
-.trace{flex:1;overflow-y:auto;padding:16px 20px 8px}
+.trace{flex:1;min-height:0;overflow-y:auto;padding:16px 20px 8px}
 .empty{padding:52px 0;text-align:center}
 .empty-t{font-size:13px;color:var(--sub)}
 .empty-d{font-size:11.5px;color:var(--mute);margin-top:6px;max-width:400px;margin-left:auto;margin-right:auto;line-height:1.8}
@@ -1177,7 +1180,9 @@ body.dark .mt-vd.bad{background:rgba(240,151,139,.14);color:#f0978b}
   display:inline-flex;align-items:center;gap:6px;padding:3px 5px 3px 4px;max-width:250px;
   border:0.5px solid #e3e3de;border-radius:7px;background:#fafaf7;font-size:11.5px;color:#4a4a45;
 }
-.att-th{width:22px;height:22px;border-radius:5px;object-fit:cover;flex:none;display:block}
+.att-th{width:22px;height:22px;border-radius:5px;object-fit:cover;flex:none;display:block;cursor:zoom-in}
+/* 有图时整块可点：22px 的缩略图连点两下都点不准，命中区放到 chip 上 */
+.att-pic{cursor:zoom-in}
 .att-ic{
   width:22px;height:22px;border-radius:5px;background:#eef1f5;color:#5b6b7d;
   display:inline-flex;align-items:center;justify-content:center;font-size:8px;font-weight:600;flex:none;letter-spacing:-.2px;
@@ -1764,6 +1769,39 @@ body.dark .ps.done{background:var(--green-soft);color:var(--green)}
 .msg.me.sup .bub{background:#f4f6fa;border-color:#dde4ef;color:#3b4657;font-size:12.5px}
 .me-tag{flex:0 0 auto;align-self:flex-start;margin-top:5px;font-size:10px;color:#7c8698;
   background:#eef1f6;border-radius:5px;padding:2px 6px;letter-spacing:.3px}
+
+/* 老板发出去的图：气泡里直接看见缩略图，点一下放大。
+   以前这里只有一行「（附 2 张截图）」——图在不在、是哪张，全靠猜。 */
+.msg .bub-pics{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 6px}
+.msg .bub-pic{
+  width:96px;height:96px;object-fit:cover;border-radius:8px;display:block;
+  border:1px solid rgba(0,0,0,.06);cursor:zoom-in;background:#fff;
+}
+.msg .bub-pic:hover{filter:brightness(.96)}
+.msg .bub-pics + *{margin-top:2px}
+
+/* 图片放大层：整页压暗，图按视口撑满。
+   z-index 高于弹窗（弹窗是 900 一档），否则从产出预览里点图会被压在下面 */
+.img-box{
+  position:fixed;inset:0;z-index:1200;display:none;align-items:center;justify-content:center;
+  background:rgba(16,20,28,.82);padding:28px;cursor:zoom-out;
+  -webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px);
+}
+.img-box.on{display:flex}
+.img-box img{
+  max-width:min(1400px,94vw);max-height:92vh;width:auto;height:auto;
+  border-radius:8px;box-shadow:0 18px 60px rgba(0,0,0,.45);background:#fff;cursor:default;
+}
+.img-box .img-x{
+  position:fixed;top:14px;right:18px;width:34px;height:34px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:400;
+  color:#fff;background:rgba(255,255,255,.16);cursor:pointer;line-height:1;
+}
+.img-box .img-x:hover{background:rgba(255,255,255,.28)}
+@media (max-width:760px){
+  .msg .bub-pic{width:72px;height:72px}
+  .img-box{padding:12px}
+}
 
 /* 推理过程：默认露尾部几行，点开看全文。
    「一直在显示分析问题」就是这一段缺位——模型在想的几十秒里界面上没有任何变化 */

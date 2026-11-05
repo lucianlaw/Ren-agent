@@ -80,9 +80,13 @@
       if (!items.length) { list.hidden = true; list.innerHTML = ''; }
       else {
         list.hidden = false;
+        /* 缩略图带 data-imgbox：点了就在页面上放大（app.js 里统一接管）。
+           发之前先看清楚这张图对不对，比发出去再回来找强。 */
         list.innerHTML = items.map((it, i) => `
-          <span class="att" data-i="${i}" title="${esc(it.path || it.name)}">
-            ${it.thumb ? `<img class="att-th" src="${it.thumb}" alt="">` : `<i class="att-ic">${esc(kindOf(it.name))}</i>`}
+          <span class="att${it.thumb ? ' att-pic' : ''}" data-i="${i}" title="${esc(it.path || it.name)}">
+            ${it.thumb
+              ? `<img class="att-th" src="${it.thumb}" alt="" data-imgbox="${it.thumb}">`
+              : `<i class="att-ic">${esc(kindOf(it.name))}</i>`}
             <span class="att-nm">${esc(it.name)}</span>
             <span class="att-sz">${it.failed ? '失败' : sizeText(it.size)}</span>
             <b class="att-x" data-x="${i}" title="移除">×</b>

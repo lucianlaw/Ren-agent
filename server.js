@@ -74,6 +74,45 @@ const MIME = {
   '.webmanifest': 'application/manifest+json'
 };
 
+/* ── 图片补水：浏览器只传路径，服务端自己去工作区读 ──
+   为什么必须这样：一张截图压完也有 500–700KB，base64 再涨三分之一。几张图
+   随 /api/run 或 /inject 重发一次，请求体就是几 MB，前置网关会当成攻击载荷
+   直接回一个 HTML 拦截页（403）——界面上是「服务端拒绝了这次执行」，
+   看着像我们自己的鉴权拒了，其实请求连 handler 都没进到。
+   图片本来就在工作区里（上传是发送前就完成的），所以让浏览器只报路径，
+   服务端读盘再补成 dataURL 交给视觉模型。链路一样，体积归零。 */
+const IMG_EXT_RE = /\.(png|jpe?g|webp|gif|bmp)$/i;
+const IMG_MIME = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp'
+};
+/* 补水上限：单张 4MB（原文件）、一次最多 6 张。超了就不补——
+   模型看不到时还有路径可调 view_image，比整条请求被网关拦掉好得多。 */
+function hydrateImages(scope, list, cap = 6) {
+  const arr = Array.isArray(list) ? list : [];
+  if (!arr.length) return arr;
+  const root = scopeRoot(scope);
+  if (!root) return arr;
+  let filled = 0;
+  return arr.map(it => {
+    if (!it || typeof it !== 'object') return it;
+    const p = String(it.path || '');
+    const isImg = /^image\//i.test(String(it.mime || '')) || IMG_EXT_RE.test(p);
+    if (!isImg || it.dataUrl || !p) return it;
+    if (filled >= cap) return it;
+    const target = inside(root, p);
+    if (!target) return it;
+    try {
+      const st = fs.statSync(target);
+      if (!st.isFile() || st.size > 4 * 1024 * 1024) return it;
+      const mime = IMG_MIME[path.extname(target).toLowerCase()] || 'image/png';
+      const dataUrl = `data:${mime};base64,${fs.readFileSync(target).toString('base64')}`;
+      filled += 1;
+      return { ...it, mime, dataUrl };
+    } catch { return it; }
+  });
+}
+
 /* 语音转写：硅基流动的 SenseVoiceSmall（官方定价页写明免费）。
    浏览器自带的 Web Speech 在国内连不上 Google 的接口，所以录音走服务端转发。
    密钥不落盘、不入库：由请求带上，或用环境变量兜底。 */
@@ -1139,6 +1178,10 @@ async function route(req, res) {
       if (!task || typeof task !== 'object' || !String(task.goal || '').trim()) {
         return send(res, 400, { ok: false, error: '缺少任务内容（task.goal）' });
       }
+      /* 浏览器只送路径（见 hydrateImages）：把图从工作区读回来，
+         视觉模型才有东西可看。前端自己带 dataUrl 的老版本页面不受影响。 */
+      task.files = hydrateImages(scope, task.files);
+      job.followUpImages = hydrateImages(scope, job.followUpImages);
 
       /* 权限一律以服务端记录为准：前端说法只能用来收紧 */
       const settings = job.settings && typeof job.settings === 'object' ? { ...job.settings } : {};
@@ -1296,7 +1339,10 @@ async function route(req, res) {
       if (!ownsRun(run)) return send(res, 404, { ok: false, error: '任务已结束' });
       const b = await readBody(req, 8 * 1024 * 1024);
       if (tail === '/inject') {
-        const t = run.inject(String(b.text || ''), b.images || []);
+        /* 插话带的截图同样是「只传路径」：这条请求体里塞 base64 一样会被网关拦，
+           拦下来表现成「已插给员工」但其实谁也没收到。 */
+        const imgs = hydrateImages(run.scope, b.images || []);
+        const t = run.inject(String(b.text || ''), imgs);
         return send(res, 200, { ok: true, queued: !!t || (b.images || []).length > 0 });
       }
       run.approve(String(b.id || ''), !!b.ok);
