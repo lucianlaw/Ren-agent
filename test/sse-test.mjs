@@ -230,6 +230,13 @@ console.log('\n[3] 探针：并发只允许一条，提前断开要记为 client
   eq('服务端记到「客户端先断开」', last && last.endedBy, 'client');
   eq('并且没标成走完', last && last.completed, false);
   ok('提前断开时耗时明显小于计划', last && last.elapsedMs < last.plannedMs, last && { e: last.elapsedMs, p: last.plannedMs });
+
+  /* 实测结果要能从 health 看到。「测过」和「没测过」如果长得一样，
+     下次换网关时就不会有人想起来复测——而没有复测等于从来没测过。 */
+  const h = await (await fetch(`${BASE}/api/health?key=${encodeURIComponent(KEY)}`, { headers: { Origin: BASE } })).json();
+  ok('health 带最近一次实测结果', !!(h.probe && h.probe.at), h.probe);
+  eq('health 里记的是「被提前切断」', h.probe && h.probe.result, 'cut');
+  ok('health 里能看到实测过了几次', h.probe && h.probe.runs >= 2, h.probe && h.probe.runs);
 }
 
 console.log('\n[4] 探针参数有上下限（不能用来挂一条 10 小时的连接）');

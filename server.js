@@ -41,7 +41,7 @@ import {
   listScopes, quickStats, usageDir, allLimitOverrides, fmtBytes
 } from './lib/quota.js';
 import { runBackup, verifyBackup, backupStatus, listBackups, scheduleBackups } from './lib/backup.js';
-import { streamProbe, probeHistory, probeBusy } from './lib/probe.js';
+import { streamProbe, probeHistory, probeBusy, probeSummary } from './lib/probe.js';
 import { previewOffice } from './lib/office.js';
 import { digestFiles } from './lib/digest.js';
 import { selfAuth, treeSrc, readSrc, grepSrc } from './lib/selfsrc.js';
@@ -623,6 +623,10 @@ async function route(req, res) {
         /* 状态层：mode 是 memory 就说明这次降级了——磁盘上什么都没存。
            reaped 是本次启动收掉的中断任务数，非 0 意味着上次是非正常退出。 */
         state: withKey ? state.stats() : { mode: state.modeOf() },
+        /* 最近一次长连接实测。result=never 意味着「从来没测过」——
+           这不是错误，但它是一个应该被看见的状态：长连接是任务不中断的前提，
+           而「没测过」和「测过且通过」在界面上长得一模一样。 */
+        probe: withKey ? probeSummary() : undefined,
         workspace: WORKSPACE_BASE,
         // 反代进来的实际头部，用来核对同源判定（不含任何密钥）
         seen: LOCAL_ONLY ? undefined : {
