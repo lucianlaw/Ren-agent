@@ -1229,6 +1229,21 @@ async function loadModels() {
 function modelOf(id) {
   return state.models.find(m => m.id === id) || null;
 }
+/* 挑一个能看图的模型：当前选中的如果本身就是多模态，就用它自己；否则从列表里找一个。
+   为什么靠名字匹配：通道的模型对象只标了「支持工具调用」，没有图片能力位。
+   找不到就返回空——服务端的 view_image 会如实说「没有可用的视觉模型」，
+   而不是让员工回一句「我没收到图片」。 */
+const VISION_RE = /(gpt-4o|gpt-4\.1|gpt-4\.5|gpt-5|claude|gemini|qwen[\w.-]*vl|glm-4(\.\d)?v|doubao[\w.-]*(vision|vl)|internvl|llava|pixtral|moondream|multimodal|vision|omni)/i;
+const NOT_VISION_RE = /(audio|tts|whisper|embed|rerank|moderation)/i;
+function pickVisionModel() {
+  const list = (state.models || []).filter(m => m && m.id);
+  const name = m => `${m.id} ${m.name || ''} ${m.description || ''}`;
+  const cur = state.settings.model;
+  const curM = list.find(m => m.id === cur);
+  if (curM && VISION_RE.test(name(curM)) && !NOT_VISION_RE.test(name(curM))) return cur;
+  const hit = list.find(m => VISION_RE.test(name(m)) && !NOT_VISION_RE.test(name(m)));
+  return hit ? hit.id : '';
+}
 function renderModelPill() {
   // 顶栏「全局模型」徽标显示的是全局默认模型名
   const m = modelOf(state.settings.model);
@@ -4597,7 +4612,7 @@ function viewOutput(p) {
 const TOOL_CN = {
   write_file: '写文件', read_file: '读文件', list_dir: '看目录', search_text: '搜内容',
   make_deck: '生成 PPT', make_sheet: '生成表格', make_doc: '生成文档', gen_image: '生成图片',
-  find_image: '找图片', read_doc: '读文档', run_shell: '跑命令', web_search: '联网搜索',
+  find_image: '找图片', read_doc: '读文档', view_image: '看图片', run_shell: '跑命令', web_search: '联网搜索',
   fetch_url: '打开网页', todo_write: '记录进度'
 };
 function creditsOf(tok) { return (Number(tok) || 0) / creditRate(); }
@@ -4740,7 +4755,7 @@ function runStatusHTML(t, tr) {
   return progressHTML({
     label: `第 ${curR} 轮`,
     /* 状态与进度合成一张卡：头一行说这轮在干什么，第二行说具体做到哪了 */
-    stateLabel: allDone ? '收尾中' : busyDoing ? '执行中' : '分析中',
+    stateLabel: allDone ? '收尾中' : busyDoing ? '执行中' : (tr.think ? '推理中' : '分析中'),
     state: doingTextOf(tr, t, curR),
     steps,
     stepLabel: tr.nodes.length ? `已走 <b>${tr.nodes.length}</b> 步` : '还没开始',
@@ -4771,6 +4786,14 @@ function doingTextOf(tr, t, curR) {
   if (stream) {
     const line = stream.split(/\n+/).map(s => s.replace(/^[#>*\-\s]+/, '').trim()).filter(Boolean)[0] || '';
     return line ? '正在写回复：' + brief(line, 38) : '正在写回复…';
+  }
+  /* 推理模型已经在「想」了：把最后一句想的内容摆出来，别只留一句「分析中」。
+     取最后一行（最新的判断），太长就截断——这里要的是一眼能读的摘要。 */
+  const think = String(tr.think || '').trim();
+  if (think) {
+    const lines = think.split(/\n+/).map(s => s.replace(/^[#>*\-\s]+/, '').trim()).filter(Boolean);
+    const lastLine = lines[lines.length - 1] || '';
+    return lastLine ? '正在推理：' + brief(lastLine, 36) : '正在推理…';
   }
   const todo = lastTodo(t, tr, curR) || [];
   if (todo.length) {
@@ -5005,21 +5028,46 @@ function maxRoundOf(t) {
 function asksOf(t) {
   const raw = Array.isArray(t && t.userMsgs) ? t.userMsgs : [];
   const asks = raw.map((u, i) => (u && typeof u === 'object')
-    ? { text: String(u.text || '').trim(), at: Math.max(0, Number(u.at) || 0), _i: i, inline: !!u.inline }
-    : { text: String(u || '').trim(), at: 0, _i: i, inline: false })
+    ? {
+      text: String(u.text || '').trim(), at: Math.max(0, Number(u.at) || 0),
+      _i: i, inline: !!u.inline, said: Math.floor(Number(u.round) || 0)
+    }
+    : { text: String(u || '').trim(), at: 0, _i: i, inline: false, said: 0 })
     .filter(a => a.text);
-  if (!asks.length && t && t.goal) asks.push({ text: String(t.goal).trim(), at: 0, _i: 0, inline: false });
+  if (!asks.length && t && t.goal) {
+    asks.push({ text: String(t.goal).trim(), at: 0, _i: 0, inline: false, said: 1 });
+  }
   asks.sort((a, b) => (a.at - b.at) || (a._i - b._i));
-  /* 跑着的时候插一句话不算新的一轮，跟着当前这一轮走 */
-  let r = 0;
-  for (const a of asks) { if (!a.inline) r++; a.round = Math.max(1, r); }
+  /* 轮次归属：自带 round 的一律认它（只信 ≥1 的整数），缺的才按顺序补。
+     以前这里无视原 round、纯按条数往上数——中途插一句「补充」也被算成新的一轮，
+     于是「说两句」变成「三轮」，多出来的那轮是空的。
+     空轮正是老板看到的「我的话一会儿在上面，一会儿没了」：
+     当前轮指针落到空轮上，屏幕上就只剩一片空白。 */
+  let seq = 0;
+  let last = 0;
+  for (const a of asks) {
+    if (a.said >= 1) {
+      a.round = a.said;
+      last = Math.max(last, a.said);
+      if (!a.inline) seq = Math.max(seq, a.said);
+    } else if (a.inline && last >= 1) {
+      a.round = last;                 /* 插话不占新轮，跟着最近那句走 */
+    } else {
+      seq += 1;
+      a.round = seq;
+      last = Math.max(last, seq);
+    }
+  }
   return asks;
 }
 
 function syncRounds(t) {
   if (!t) return { rounds: 1, asks: [], list: [] };
   const asks = asksOf(t);
-  const n = Math.max(1, asks.length);
+  /* 轮数 = 最大轮号，**不是**一共说了几句：插话、同轮多说几句都不该撑出新轮。
+     这一行以前写的是 asks.length，实测「1 轮 + 1 次插话 + 2 轮」会被算成 3 轮，
+     第 3 轮什么都没有——界面上凭空多一块空白，还把这之后的新话挤到错位。 */
+  const n = Math.max(1, asks.reduce((m, a) => Math.max(m, Number(a.round) || 1), 1));
   const steps = Array.isArray(t.steps) ? t.steps : [];
   const roundAt = g => {
     let r = 1;
@@ -5059,9 +5107,18 @@ function syncRounds(t) {
     if (s.kind === 'round') s.round = Math.min(n, Math.max(1, Number(s.round) || n));
   }
   if (Array.isArray(t.userMsgs) && t.userMsgs.length) {
-    t.userMsgs = asks.map(a => (a.inline
+    const want = asks.map(a => (a.inline
       ? { text: a.text, at: a.at, round: a.round, inline: true }
       : { text: a.text, at: a.at, round: a.round }));
+    /* 归一化只在「真的变了」的时候替换：renderTrace 每帧都会走到这里，
+       无条件换数组会让所有持有旧引用的地方（runCtx、落库节流）看到两份数据 */
+    const same = want.length === t.userMsgs.length && want.every((w, i) => {
+      const o = t.userMsgs[i];
+      return o && String(o.text || '') === w.text
+        && (Math.floor(Number(o.round) || 0)) === w.round
+        && !!o.inline === !!w.inline;
+    });
+    if (!same) t.userMsgs = want;
   }
   t.rounds = n;
   return { rounds: n, asks, list: roundsList(t, n) };
@@ -5075,9 +5132,13 @@ function roundsList(t, n) {
     const tools = steps.filter(s => s && s.kind === 'tool' && (Number(s.round) || 1) === r);
     const saysR = steps.filter(s => s && s.kind === 'say' && (Number(s.round) || 1) === r);
     const say = saysR[saysR.length - 1];
+    const umR = ums.filter(u => (Number(u && u.round) || 1) === r);
     list.push({
       round: r,
-      asks: ums.filter(u => (Number(u && u.round) || 1) === r).map(u => u.text),
+      /* asks 只给文字（决策卡、待办、导出这些老地方按字符串用）；
+         askItems 多带一个 inline 标记，界面上要把「中途补充」和「这一轮的问话」分开 */
+      asks: umR.map(u => String((u && u.text) || '')),
+      askItems: umR.map(u => ({ text: String((u && u.text) || ''), inline: !!(u && u.inline) })),
       tools,
       /* result 留作兼容（拍板卡、交接这些地方还读它）；界面渲染走 says 全量 */
       result: (say && say.text) || '',
@@ -5253,6 +5314,13 @@ function filesBlockHTML(files, t, tr) {
 }
 
 /* 已经结束的那种「一轮」：步骤默认收起来，回答和产出直接摊在外面 */
+/* 老板说的话：历史轮和当前轮用同一套渲染，位置和样式才不会有「刚才在这、一会儿没了」 */
+function msgMeHTML(text, inline) {
+  return `<div class="msg me${inline ? ' sup' : ''}">`
+    + (inline ? '<span class="me-tag">补充</span>' : '')
+    + `<div class="bub">${esc(text)}</div><span class="ava">我</span></div>`;
+}
+
 function turnHTML(R, t) {
   const who = (t && t.employeeName) || 'AI';
   const open = openedTurns.has(R.round);
@@ -5260,9 +5328,10 @@ function turnHTML(R, t) {
   const bad = tools.filter(s => s.ok === false).length;
   const ms = tools.reduce((a, s) => a + (Number(s.ms) || 0), 0);
   let h = `<div class="turn" data-turn="${R.round}">`;
-  for (const a of R.asks) {
-    h += `<div class="msg me"><div class="bub">${esc(a)}</div><span class="ava">我</span></div>`;
-  }
+  const askItems = (R.askItems && R.askItems.length)
+    ? R.askItems
+    : (R.asks || []).map(x => ({ text: x, inline: false }));
+  for (const a of askItems) h += msgMeHTML(a.text, a.inline);
   if (tools.length) {
     h += `<div class="turn-bar" data-turn-toggle="${R.round}">
       <span class="caret">${open ? '▾' : '▸'}</span>
@@ -5355,16 +5424,25 @@ function renderTrace(noScroll) {
   /* 轮次从数据推导（见 syncRounds）：前面几轮整段铺上去，最后一轮是现场 */
   const info = t ? syncRounds(t) : { rounds: 1, asks: [], list: [] };
   const rounds = info.list || [];
+  /* 空轮不画：没有问话、没有步骤、也没有回答的轮次是「轮次算错」留下的壳，
+     不是真发生过的事。以前它会实实在在占一整块，把老板的话推到上面去 */
+  const filled = R => ((R.askItems || R.asks || []).length || (R.says || []).length
+    || String(R.result || '').trim() || (R.tools || []).length) > 0;
   const curR = Number(tr.round) || info.rounds || 1;
-  const hist = rounds.filter(R => R.round < curR);
-  const curTurn = rounds.find(R => R.round === curR) || { round: curR, asks: [], tools: [], result: '' };
-  const asks = (curTurn.asks || []).slice();
+  const hist = rounds.filter(R => R.round < curR && filled(R));
+  const curTurn = rounds.find(R => R.round === curR)
+    || { round: curR, asks: [], askItems: [], tools: [], result: '' };
+  /* 当前轮的问话带上 inline 标记（中途补充和这一轮的问话要能分出来），
+     再加「刚发出去、还没落进 userMsgs」的那一句 */
+  const curItems = (curTurn.askItems && curTurn.askItems.length)
+    ? curTurn.askItems.map(x => ({ text: x.text, inline: !!x.inline }))
+    : (curTurn.asks || []).map(x => ({ text: x, inline: false }));
   if (tr.userMsg) {
     const txt = String(tr.userMsg).trim();
-    if (txt && !asks.includes(txt)) asks.push(txt);
+    if (txt && !curItems.some(a => a.text === txt)) curItems.push({ text: txt, inline: false });
   }
   const running = tr.status === 'running' || !!(t && t.status === 'running');
-  if (!tr.nodes.length && !tr.result && !running && !asks.length && !hist.length) {
+  if (!tr.nodes.length && !tr.result && !running && !curItems.length && !hist.length) {
     box.innerHTML = `<div class="empty"><div class="empty-t">这里会显示每一步</div>
       <div class="empty-d">员工调用了哪个工具、参数是什么、返回了什么、花了多久——都摊开给你看，不藏在对话里。</div></div>`;
     return;
@@ -5377,9 +5455,7 @@ function renderTrace(noScroll) {
 
   /* ── 当前这一轮 ── */
   html += `<div class="turn cur" data-turn="${curR}">`;
-  for (const a of asks) {
-    html += `<div class="msg me"><div class="bub">${esc(a)}</div><span class="ava">我</span></div>`;
-  }
+  for (const a of curItems) html += msgMeHTML(a.text, a.inline);
   /* 预算续杯：到线了不是只能去设置里改 */
   if (tr.status === 'budget_exceeded' || (t && t.status === 'budget_exceeded')) {
     html += `<div class="alert"><div class="grow">token 到上限了，任务停在这里。再给 10 万可以从断点接着跑。</div>
@@ -5422,6 +5498,24 @@ function renderTrace(noScroll) {
   }
   /* 跑着的时候不再单独出一条「收到消息，正在分析…」的虚线：
      那句话和下面的进度条说的是同一件事，已经合并进进度卡的第二行 */
+  /* 推理模型的思考：默认只露最后几行，点开看全文。
+     老板说的「一直在显示分析问题」就是这一段缺位——模型在想的几十秒里，
+     界面上没有任何新东西，看着和卡住一样。这里只显示，不落库。 */
+  {
+    const think = String(tr.think || '').trim();
+    if (think && running) {
+      const open = openedNodes.has('think' + curR);
+      const tail = think.length > 900 ? '…' + think.slice(-900) : think;
+      html += `<div class="think" data-toggle="think${curR}">
+        <div class="think-hd">
+          <span class="caret">${open ? '▾' : '▸'}</span>
+          <b>${esc((t && t.employeeName) || 'AI')} 正在推理</b>
+          <span class="args">${think.length} 字 · ${open ? '收起' : '看全文'}</span>
+        </div>
+        <div class="think-bd">${esc(open ? think : tail)}</div>
+      </div>`;
+    }
+  }
   /* 分析过程逐条摊开：每条一句、按发生顺序排，不隐藏不覆盖。
      正在生成的正文单独一条挂在最后——它写完后也会变成列表里的一笔。 */
   {
@@ -5814,9 +5908,19 @@ function srvAction(path, body) {
 }
 
 function agentInject(text, images) {
-  if (!SRV.on) return (window.BOSS && BOSS.inject) ? BOSS.inject(text, images) : '';
-  srvAction('/inject', { text, images });
-  return text;   /* 调用方只关心「有没有内容要插」，不关心送达细节 */
+  if (!SRV.on) {
+    /* 游客态 / 本地执行：直接交给页面里的那个循环，它一定在（同一份内存） */
+    if (window.BOSS && BOSS.inject) BOSS.inject(text, images);
+    return Promise.resolve(true);
+  }
+  return srvAction('/inject', { text, images }).then(j => {
+    if (j && j.ok) return true;
+    /* 服务端说这条任务已经结束了（runId 失效 / 404）：这一轮是真的没了。
+       不能假装插进去了——老板会看到「已插给员工」，而那句话谁也没收到，
+       过一会儿就变成「我发的消息发着发着消失了」。交给调用方重发成新的一轮。 */
+    SRV.on = false;
+    return false;
+  });
 }
 
 function agentApprove(id, ok) {
@@ -5946,6 +6050,9 @@ async function agentRun(job) {
     judge: job.judge || null,
     followUp: job.followUp || '',
     followUpImages: job.followUpImages || [],
+    /* 能看图的模型：服务端跑 view_image 时用。模型名不让工具参数决定，
+       只认这里带上来的值。没有就留空，员工会被告知「看不了图」而不是瞎猜 */
+    visionModel: pickVisionModel(),
     tools: Array.isArray(window.CUSTOM_TOOLS) ? window.CUSTOM_TOOLS : []
   };
   let r;
@@ -6012,7 +6119,19 @@ async function runGoal(goal, existingTaskId) {
     const docHint = docs.length
       ? `\n（老板刚发来 ${docs.length} 个文件：${docs.map(d => '`' + d.path + '`').join('、')}，需要内容就 read_file 读）`
       : '';
-    agentInject(text2 + docHint, imgs);
+    const delivered = await agentInject(text2 + docHint, imgs);
+    if (!delivered) {
+      /* 这一轮在服务端已经结束了（前端还以为在跑）：不能装作插进去了。
+         附件原样退回输入区，这句话改走「新的一轮」重新发出去——
+         不然老板看到「已插给员工」，实际上那句话和图都掉进了黑洞。 */
+      if (window.ATT_MAIN && atts.length) window.ATT_MAIN.restore(atts);
+      $('#goal').value = text2;
+      $('#goal').style.height = 'auto';
+      state.running = false;
+      stopRunHeart();
+      toast('这一轮在服务端已经结束了，刚才那句改成新的一轮重发');
+      return runGoal(text2, existingTaskId);
+    }
       /* 插话插的是「正在跑的那个任务」，不是老板此刻翻到的那个 */
       const t = runTask();
       const live = runTrace();
@@ -6034,6 +6153,15 @@ async function runGoal(goal, existingTaskId) {
     return toast('上一个还在跑');
   }
   if (!state.staff.length) return toast('先建一个员工');
+  /* 带图的任务先确认有没有能看图的模型：没有的话现在就说，
+     别等员工跑完回一句「我看不到图片」——那时候老板已经等了两分钟，
+     还以为是系统把图弄丢了。图片本身照样会存进工作区。 */
+  if (window.ATT_MAIN) {
+    const pendingImg = window.ATT_MAIN.items().some(a => a && a.dataUrl);
+    if (pendingImg && !pickVisionModel()) {
+      toast('通道里没有能看图的模型：图会存进工作区，但员工只能按你的文字理解。要用图就先去「全局模型」换一个多模态的。');
+    }
+  }
   if (!state.models.length) {
     toast('模型通道还没就绪，先登录或检查网络');
     loadModels();
@@ -6149,9 +6277,11 @@ async function runGoal(goal, existingTaskId) {
     task.rounds = nextR;
     /* 老板这句原话必须当场记下并标好轮次：对话是一条一条问答排的，
        光靠 messages 反推会在 userMsgs 已有内容时整段丢掉。
-       这里的 text 必须和 followUp 一字不差，run() 靠它去重 */
+       去重看的是「这一轮有没有记过」，不是「这句话以前说过没有」——
+       只看文字的话，连着说两句「继续」第二句会被当成重复静默丢掉，
+       老板看到的就是「我发的消息发出去就没了」。 */
     if (!Array.isArray(task.userMsgs)) task.userMsgs = userMsgsOf(task);
-    if (!task.userMsgs.some(u => u && u.text === followUp)) {
+    if (!task.userMsgs.some(u => u && u.text === followUp && (Number(u.round) || 0) === nextR)) {
       task.userMsgs.push({
         text: followUp,
         at: (task.steps || []).filter(s => s.kind === 'tool').length,
@@ -6914,6 +7044,8 @@ function applyEvent(ev, muted) {
     tr.startedAt = Date.now();
     tr.writing = null;
     tr.pendingAsk = null;
+    /* 新一轮的推理从空开始：上一轮的思考不能挂在这一轮脸上 */
+    tr.think = '';
     if (!muted) startLiveTick();
     paint();
   } else if (ev.t === 'step' && ev.kind === 'call') {
@@ -6956,9 +7088,14 @@ function applyEvent(ev, muted) {
     paint();
     toast('积分用完了，任务停在半路——充值后才能接着跑');
     openPoints();
+  } else if (ev.t === 'think') {
+    /* 推理模型的思考过程：整段累积发过来，前端只负责显示。
+       没有这一步，模型「想」的那几十秒界面上只有一句静止的「分析中」。 */
+    tr.think = String(ev.content || '');
+    paintSoon();
   } else if (ev.t === 'stream') {
     /* 正文边生成边显示：清空是新一轮开始，别把上一轮的残句留在屏幕上 */
-    if (ev.reset) { tr.stream = ''; tr.writing = null; }
+    if (ev.reset) { tr.stream = ''; tr.writing = null; tr.think = ''; }
     else tr.stream = ev.content || '';
     paintSoon();
   } else if (ev.t === 'writing') {

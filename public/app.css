@@ -1747,6 +1747,24 @@ body.dark .ps.done{background:var(--green-soft);color:var(--green)}
   flex:0 0 auto;width:26px;height:26px;border-radius:50%;background:#4a7cf7;color:#fff;
   font-size:11px;display:flex;align-items:center;justify-content:center;margin-top:1px;
 }
+/* 中途补充的话：跟在问话后面、标一个「补充」，不算新一轮。
+   以前它和正式问话长得一模一样，插一次话就多出一轮空的，看不出哪句是补充 */
+.msg.me.sup{margin-top:-5px}
+.msg.me.sup .bub{background:#f4f6fa;border-color:#dde4ef;color:#3b4657;font-size:12.5px}
+.me-tag{flex:0 0 auto;align-self:flex-start;margin-top:5px;font-size:10px;color:#7c8698;
+  background:#eef1f6;border-radius:5px;padding:2px 6px;letter-spacing:.3px}
+
+/* 推理过程：默认露尾部几行，点开看全文。
+   「一直在显示分析问题」就是这一段缺位——模型在想的几十秒里界面上没有任何变化 */
+.think{margin:8px 0 10px;border:1px dashed #d9e0ec;border-radius:10px;background:#fafbfd}
+.think-hd{display:flex;align-items:center;gap:7px;padding:7px 11px;cursor:pointer;
+  font-size:11.5px;color:#5c6779;user-select:none}
+.think-hd b{font-weight:600;color:#4a5568}
+.think-hd .caret{color:var(--mute);font-size:10px}
+.think-hd .args{margin-left:auto;color:var(--mute);font-size:10px}
+.think-bd{padding:0 12px 9px 26px;font-size:12px;line-height:1.72;color:#6a7385;
+  white-space:pre-wrap;word-break:break-word;max-height:150px;overflow:auto}
+.think .caret{transition:transform .12s}
 
 /* ── 本轮收尾条：已完成 / 耗时 / token / 本次产出 ── */
 .rs{margin:10px 0 4px;border:1px solid var(--line);border-radius:10px;background:#fbfcfd;padding:9px 12px}

@@ -81,9 +81,13 @@ console.log('插话：不能把 B 框里的话塞进 A');
 {
   const g = appSrc.indexOf('async function runGoal(goal, existingTaskId) {');
   const i = appSrc.indexOf('if (state.running) {', g);
-  const seg = appSrc.slice(i, i + 1400);
+  const seg = appSrc.slice(i, i + 2600);
   ok('看的是别的任务就先劝住', /if \(!watchingRun\(\)\) \{/.test(seg));
   ok('提示里点名是哪个任务在跑', /还在跑，等它收工或先按 ■ 停掉再发/.test(seg));
+  /* 先投递、再记账：投递失败（那一轮其实已经结束）要能把这句话改走新一轮，
+     不能先记进 userMsgs 再说「已插给员工」——那是假的 */
+  ok('先确认插话真送到了', /const delivered = await agentInject\(text2 \+ docHint, imgs\);/.test(seg));
+  ok('没送到就退回输入区重发', /window\.ATT_MAIN\.restore\(atts\)/.test(seg));
   ok('插话记账落在跑着的那个任务上', /const t = runTask\(\);[\s\S]{0,80}const live = runTrace\(\);/.test(seg));
 }
 

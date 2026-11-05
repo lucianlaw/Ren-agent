@@ -584,6 +584,9 @@
       ms: Number(r.ms) || 0,
       blockedOn: r.blocked_on || null,
       deliverableCheck: r.deliverable_check || null,
+      /* 附件清单不进库（会把 base64 塞进数据库）：任务建好那一刻由 createTask 补回内存，
+         此后从云端读回来的任务就是「没有附件」——这是事实，不是缺陷。 */
+      files: [],
       /* 验收结论跟着 deliverable_check 一起存（库里没单独的列），读回来要拆出来还给界面 */
       verify: (r.deliverable_check && r.deliverable_check.verify) || null,
       pendingAsk: r.status === 'need_input' ? pendingAskFromMessages(r.messages) : null,
@@ -616,7 +619,11 @@
       })
       .select();
     if (error) throw error;
-    return taskFromRow(data[0]);
+    /* 附件清单必须还回去：库表没有 files 列，taskFromRow 里那一份是空的。
+       上一版直接返回 taskFromRow，于是「新任务带截图」在落库这一步就被丢了，
+       员工收到的是一个「没有附件」的任务，只能说「我没收到图片、没法解析」。
+       图片的 dataUrl 只活在内存里，不落库；路径本来就在工作区里。 */
+    return { ...taskFromRow(data[0]), files: Array.isArray(t.files) ? t.files : [] };
   }
 
   async function saveTask(clientId, patch) {

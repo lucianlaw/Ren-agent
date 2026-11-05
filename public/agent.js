@@ -207,10 +207,17 @@
         '以资料为准，资料里没有的就说没有依据。'].join('\n')
       : '';
     const files = (task && Array.isArray(task.files) ? task.files : []);
+    const isImgF = f => /^image\//i.test((f && f.mime) || '')
+      || /\.(png|jpe?g|webp|gif|bmp)$/i.test(String((f && (f.path || f.name)) || ''));
     const att = files.length
       ? ['', '附件已在工作目录里：',
-        ...files.map(f => `· ${f.path}（${String(f.kind || '').toUpperCase()}${f.size ? '，' + Math.round(f.size / 1024) + 'KB' : ''}）${f.dataUrl ? ' 图片，内容已给你看' : ' 用 read_doc 读'}`),
-        '口径以附件为准；没读就别说看过。'].join('\n')
+        ...files.map(f => {
+          const sz = f.size ? `，${Math.round(f.size / 1024)}KB` : '';
+          return isImgF(f)
+            ? `· ${f.path}（图片${sz}）${f.dataUrl ? ' 已随这条消息给你看' : ' 要看就调 view_image'}`
+            : `· ${f.path}（${String(f.kind || '').toUpperCase()}${sz}）用 read_doc 读`;
+        }),
+        '口径以附件为准；没读就别说看过。图片看不清楚或当前模型不支持视觉，就调 view_image（传上面的路径）——绝不许回答「没收到图片」。'].join('\n')
       : '';
     return [
       `你是「${staff.name}」，这家公司的「${staff.role}」。${style}`,
@@ -244,13 +251,30 @@
     ].filter(Boolean).join('\n');
   }
 
-  /* 带图片的 user 消息；模型看不了图时会退化 */
-  function userContent(text, images) {
-    const imgs = (images || []).filter(x => x && x.dataUrl).slice(0, 6);
-    if (!imgs.length) return text;
+  /* 带图片的 user 消息；模型看不了图时会退化。
+     图片的路径一定写进正文：视觉通道一旦不可用（模型不支持 / 上下文被压缩），
+     模型至少还知道「有这张图、路径是什么」，能自己调 view_image 去补，
+     而不是回一句「我没有收到图片」——那句话在老板看来就是系统坏了。 */
+  function userContent(text, files) {
+    const list = (files || []).filter(x => x && (x.dataUrl || x.path));
+    const isImg = x => /^image\//i.test((x && x.mime) || '')
+      || /\.(png|jpe?g|webp|gif|bmp)$/i.test(String((x && (x.path || x.name)) || ''));
+    const imgs = list.filter(isImg);
+    const docs = list.filter(x => !isImg(x) && x.path);
+    const withData = imgs.filter(x => x.dataUrl).slice(0, 6);
+    let body = String(text == null ? '' : text);
+    if (imgs.length) {
+      body += `\n\n【老板发了 ${imgs.length} 张图片，已存在工作区】\n`
+        + imgs.filter(x => x.path).map(x => '- ' + x.path).join('\n')
+        + '\n能直接看就照图做；看成不了（或需要更细的结构/文字）就调 view_image 传路径。';
+    }
+    if (docs.length) {
+      body += `\n\n【附件文件（要内容就 read_doc 读）】\n` + docs.map(x => '- ' + x.path).join('\n');
+    }
+    if (!withData.length) return body;
     return [
-      { type: 'text', text },
-      ...imgs.map(im => ({ type: 'image_url', image_url: { url: im.dataUrl } }))
+      { type: 'text', text: body },
+      ...withData.map(im => ({ type: 'image_url', image_url: { url: im.dataUrl } }))
     ];
   }
 
@@ -258,13 +282,13 @@
     return messages.some(m => Array.isArray(m.content));
   }
 
-  /* 模型不支持视觉时，把图片从上下文里摘掉，别让整个任务卡死 */
+  /* 模型不支持视觉时，把图片从上下文里摘掉，别让整个任务卡死。
+     摘掉 base64 不等于「图不存在」：路径还留在正文里，模型可以调 view_image 看。 */
   function dropImages(messages) {
     for (const m of messages) {
       if (!Array.isArray(m.content)) continue;
       const txt = m.content.filter(c => c && c.type === 'text').map(c => c.text).join('\n');
-      const n = m.content.filter(c => c && c.type === 'image_url').length;
-      m.content = `${txt}\n\n【附件里有 ${n} 张图片，但当前模型看不了图。请让老板改用文字描述，或把关键数字贴进对话。】`;
+      m.content = `${txt}\n\n【当前模型看不了图片，图上内容不在上下文里。要照图做，就按上面列出的路径调 view_image 让它描述图片，不要回答“没收到图片”。】`;
     }
   }
 
@@ -468,15 +492,20 @@
     }
     const keep = new Set(CORE_TOOLS);
     for (const r of NEED_TOOLS) if (r.re.test(g)) r.add.forEach(n => keep.add(n));
-    /* 没带附件就不用 read_doc——它在工具清单里要占两百多 token，聊胜于无 */
-    if (hasFiles || /(附件|上传|读一下.*(pdf|docx|xlsx|pptx))/i.test(g)) keep.add('read_doc');
+    /* 带附件才下发读附件的工具：文档给 read_doc，图片给 view_image。
+       没附件就不给——每个工具定义都占上下文，而且每一步都要重发一遍。
+       图片特别需要 view_image：主模型不一定是多模态的，没这个工具它就只能说「我看不了」。 */
+    if (hasFiles || /(附件|上传|图片|截图|照片|设计稿|看图|照着)/i.test(g)) {
+      keep.add('read_doc');
+      keep.add('view_image');
+    }
     /* 老板自己配的 HTTP 工具不在内置清单里，一律保留 */
     const out = tools.filter(t => keep.has(t.function.name) || !builtin.has(t.function.name));
     return out.length ? out : tools;
   }
 
   /* 一次模型调用：流式收集正文 / 思考 / 工具调用 / 用量 */
-  async function chatOnce({ model, messages, signal, onText, onTool }) {
+  async function chatOnce({ model, messages, signal, onText, onTool, onThink }) {
     const { tools } = await loadTools();
     const payload = {
       model,
@@ -500,6 +529,9 @@
     const calls = new Map();
     let lastPing = 0;
     let lastChars = 0;
+    /* 推理流回显的节流游标：模型在「想」的时候正文还是空的，
+       以前这段时间界面上什么都不动，只能干等。 */
+    let lastThink = 0;
     /* 计时点：用户感知的「反应快慢」是首个 token，不是整轮耗时 */
     const tCall = Date.now();
     let tFirst = 0;
@@ -513,7 +545,15 @@
         if (!tFirst) tFirst = Date.now();
         if (delta.content && !tFirstContent) tFirstContent = Date.now();
         if (delta.content) { content += delta.content; if (onText) onText(delta.content); }
-        if (delta.reasoning_content) reasoning += delta.reasoning_content;
+        if (delta.reasoning_content) {
+          reasoning += delta.reasoning_content;
+          /* 推理是「分析过程」的一部分，老板要的就是这段时间看见它在想什么。
+             节流 140ms：推理 token 比正文密得多，逐字回显会把界面压垮。 */
+          if (onThink) {
+            const now = Date.now();
+            if (now - lastThink > 140) { lastThink = now; try { onThink(reasoning); } catch (e) { /* 界面出错不影响取数 */ } }
+          }
+        }
         if (Array.isArray(delta.tool_calls)) {
           for (const tc of delta.tool_calls) {
             const idx = tc.index == null ? 0 : tc.index;
@@ -569,6 +609,10 @@
       cached: Number(pdet.cached_tokens) || 0
     };
     meterNote(meter);
+
+    /* 收尾补一次：节流窗口里最后那几十毫秒的推理不该被吞掉，
+       否则界面上看到的「思考」永远比真实进度慢半拍，最后一句还会缺一角 */
+    if (reasoning && onThink) { try { onThink(reasoning); } catch (e) { /* 同上 */ } }
 
     return {
       content, reasoning, toolCalls, servedModel: served, meter,
@@ -1592,14 +1636,12 @@
           { role: 'user', content: userContent(task.goal, task.files) }
         ];
     /* 老板已经拍过板、这一轮却是从断点重跑：确认内容只靠一次性的 followUp 是留不住的，
-       所以在调用前就把答案写进任务上下文；这里同一句话不再重复塞一遍。 */
+       所以在调用前就把答案写进任务上下文。
+       这里不再按「文字相同」跳过：连着说两句「继续」是两次真实指令，
+       按文字去重会把第二句吞掉，模型就只当没听见。多一句话的 token 远比丢指令便宜。 */
     if (followUp) {
-      const last = messages[messages.length - 1];
-      const same = last && last.role === 'user' && typeof last.content === 'string'
-        && last.content.trim() === String(followUp).trim();
-      /* 带了截图就一定要送出去：哪怕文字跟上一条一样，图是新的 */
-      const fImgs = (followUpImages || []).filter(x => x && x.dataUrl).slice(0, 6);
-      if (!same || fImgs.length) messages.push({ role: 'user', content: userContent(followUp, fImgs) });
+      const fImgs = (followUpImages || []).filter(x => x && (x.dataUrl || x.path)).slice(0, 6);
+      messages.push({ role: 'user', content: userContent(followUp, fImgs) });
     }
 
     /* 老板说过的话单独记一份账：messages 会被压缩/截断，原话不能跟着丢。
@@ -1623,7 +1665,7 @@
        task.rounds 不进数据库，刷新后归零，拿它当真相会让第三句话又挂回第二轮 */
     const _maxTag = arr => (arr || []).reduce((m, x) => Math.max(m, Number(x && x.round) || 0), 0);
     const myRound = Math.max(1, Number(task.curRound) || 0, _maxTag(task.steps), _maxTag(task.userMsgs));
-    if (followUp && !task.userMsgs.some(u => u && u.text === String(followUp))) {
+    if (followUp && !task.userMsgs.some(u => u && u.text === String(followUp) && (Number(u.round) || 0) === myRound)) {
       task.userMsgs.push({
         text: String(followUp),
         at: (task.steps || []).filter(s => s.kind === 'tool').length,
@@ -1793,6 +1835,13 @@
             const now = Date.now();
             if (now - livePing > 90) { livePing = now; emit({ t: 'stream', content: liveBuf }); }
           },
+          /* 推理模型的「想」也是过程：不回显这段时间界面上只有一句『分析中』，
+             跑长任务时看着和卡死没区别。整段累积发，前端按折叠块显示。
+             超过 8000 字只发尾部：老板看的是「现在在想什么」，不是开头那句客套。 */
+          onThink: (txt) => emit({
+            t: 'think',
+            content: txt.length > 8000 ? '…' + txt.slice(-8000) : txt
+          }),
           /* 工具参数（写文件/做表/做 PPT 的正文都在这里）也在流式生成，一并回显进度 */
           onTool: (p) => {
             const now = Date.now();

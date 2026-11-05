@@ -427,6 +427,23 @@ function getToken(uid) {
   return v.token;
 }
 
+/* ── 看图用的视觉模型（按工作区记最近一次）──
+   为什么模型名由前端挑、服务端记：通道的模型列表只有前端拿得到（SDK 在浏览器里），
+   服务端拿不到「哪些模型能看图」的能力清单。前端从完整列表里挑一个多模态的传上来。
+   为什么不放进工具参数：工具参数是模型写的，让它自己指定模型等于把「用哪个通道花钱」
+   交给它。这里只认发起任务时前端给的那个值。 */
+const VISION = new Map();     // scope -> model id
+function setVisionModel(scope, model) {
+  const k = String(scope || '').trim();
+  const m = String(model || '').trim().slice(0, 120);
+  if (!k || !m) return;
+  VISION.set(k, m);
+  if (VISION.size > 5000) VISION.clear();   // 极端情况下别让这张表长成内存泄漏
+}
+function visionModelOf(scope) {
+  return VISION.get(String(scope || '').trim()) || '';
+}
+
 /* 进行中的服务端任务：id -> ServerRun。
    这张表仍然只在内存里，理由要说清楚：Run 上面挂着事件总线、abort 控制器、
    agent 的作用域，这些都是活对象，没法序列化。把它搬到磁盘上不是「持久化」，
@@ -899,7 +916,13 @@ async function route(req, res) {
           workspace: root, scope,
           runId: String(b.runId || '').slice(0, 64),
           leaseOwner: deviceOf(b.device) || scope,
-          onTodos: () => {}, fullAccess: level === 'full'
+          onTodos: () => {}, fullAccess: level === 'full',
+          /* 看图要自己再调一次模型：凭证和端点在这一层拿，不下发给前端。
+             模型名只认任务发起时记下的那个，不由工具参数决定——
+             工具参数是模型写的，让它挑模型等于让它挑花哪条通道。 */
+          llm: (name === 'view_image' && getToken(scope))
+            ? { endpoint: cloudEndpoint(), token: getToken(scope), accessKey: cloudKey(), model: visionModelOf(scope) }
+            : null
         });
 
       /* shell 是唯一一条拦不住写入的路径：降权后的子进程想写什么，应用层管不着
@@ -1054,6 +1077,9 @@ async function route(req, res) {
          key 用派生后的 scope 而不是原始 uid——原始 uid 可能带 wu: 前缀也可能不带，
          拿它当 key 会在同一账号下存出两份凭证。 */
       if (b.token) putToken(scope, b.token);
+      /* 看图模型跟着这次任务记下来：view_image 在 /api/tool 里要用，
+         而那条请求里不会带模型名（模型不能自己指定通道） */
+      if (b.visionModel) setVisionModel(scope, b.visionModel);
       const token = getToken(scope);
       if (!token) {
         return send(res, 401, {

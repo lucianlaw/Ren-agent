@@ -145,6 +145,9 @@
       images: () => items.filter(x => x.dataUrl),
       clear: () => { items = []; render(); },
       take: () => { const c = items.slice(); items = []; render(); return c; },
+      /* 放回去：take 之后发现这句话没送出去（服务端那一轮已经结束了），
+         附件得原样退回输入区，不然图就跟着那句一起丢了 */
+      restore: list => { items = (list || []).slice(); render(); },
       addFiles,
       render
     };
