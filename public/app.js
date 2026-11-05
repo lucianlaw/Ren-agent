@@ -4116,6 +4116,24 @@ function outputFiles(t, tr, includeDeliverables, onlyRound) {
   return [...map.values()];
 }
 
+/* 工作区里实有的文件（缓存 20 秒）。
+   为什么需要它：产出清单一直只认「任务轨迹里记过的写文件动作」。于是——
+   换个任务、换个会话、或那一轮轨迹没存上（断线 / 网关拦了），
+   文件明明躺在工作区里，右栏却显示「暂无产出」，看着就是东西丢了。
+   磁盘是唯一不会说谎的真相来源，所以首页文件直接兜底列出来。 */
+let WS_FILES = { at: 0, items: [], busy: false };
+async function loadWorkspaceFiles() {
+  if (!state.scope || state.guest) { WS_FILES = { at: Date.now(), items: [], busy: false }; return; }
+  try {
+    const r = await fetch(window.withSC('/api/files?scope=' + state.scope + '&path=.'));
+    const j = await r.json();
+    const items = (j && j.ok && Array.isArray(j.items)) ? j.items.filter(x => x && !x.dir && x.path) : [];
+    WS_FILES = { at: Date.now(), items, busy: false };
+  } catch {
+    WS_FILES = { at: Date.now(), items: [], busy: false };
+  }
+}
+
 /* ── 右栏产出物展示区：跟随左栏当前选择 ──
    任务 Tab 选中某任务 → 该任务产出；项目 Tab 选中某项目 → 该项目产出；
    员工 Tab 选中某员工 → 该员工产出；「总产出」页 → 全部产出。 */
@@ -4144,6 +4162,34 @@ function renderOutputRail() {
     const nm = emp ? emp.name : '';
     list = nm ? all.filter(o => o.by === nm) : [];
     head = emp ? `${emp.name} · 产出` : '员工产出';
+  }
+  /* 任务 / 总产出这两处才补工作区首页文件：
+     员工产出、项目产出讲的是「谁做的 / 哪个项目的」，把所有人的工作区文件混进去没意义。
+     只补最近 7 天动过的：工作区一放就是几十个历史文件 + 种子文件，
+     全摊进来会把真正的产出冲淡；更早的东西让人自己点「工作区」去翻。 */
+  const workspacesScope = state.view === 'output' || (state.lastListView === 'task' && !!state.curTaskId);
+  /* 拉工作区清单必须放在「暂无产出」早退之前：否则空清单直接 return，
+     连拉都不拉，兜底永远轮不到——这正是「文件明明在、面板却说没有」的成因。 */
+  if (workspacesScope && !WS_FILES.busy && Date.now() - WS_FILES.at > 20000) {
+    WS_FILES.busy = true;
+    loadWorkspaceFiles().then(() => renderOutputRail()).catch(() => {});
+  }
+  const WS_RECENT = 7 * 24 * 3600e3;
+  if (workspacesScope) {
+    const known = new Set(list.map(o => String(o.path || '')));
+    const extra = WS_FILES.items
+      .filter(f => f && f.path && !known.has(f.path))
+      .filter(f => Number(f.mtime || 0) > Date.now() - WS_RECENT)
+      .sort((a, b) => Number(b.mtime || 0) - Number(a.mtime || 0))
+      .slice(0, 15);
+    for (const f of extra) {
+      list.push({
+        path: f.path,
+        kind: isImagePath(f.path) ? 'image' : 'file',
+        srcType: 'workspace', srcId: '', srcLabel: '工作区', by: '',
+        at: Number(f.mtime || 0), intro: ''
+      });
+    }
   }
   list = list.slice().sort((a, b) => (b.at || 0) - (a.at || 0));
   /* 右栏搜索：先在本面板里筛，筛不到再扩到全部产出——
