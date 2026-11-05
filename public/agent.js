@@ -412,9 +412,15 @@
     try {
       return await chatOnce(args);
     } catch (e) {
-      const msg = String((e && e.message) || '');
+      const msg = String((e && e.message) || (e && e.error && e.error.message) || '');
       if (!hasImages(args.messages)) throw e;
-      if (!/image|vision|multimodal|unsupported|invalid.*content|content.*invalid/i.test(msg)) throw e;
+      /* 只认英文关键词会漏：通道报错有时是「不支持图片输入」这种中文，
+         那时降级不触发，整个任务直接失败——而失败原因看起来跟图毫无关系。
+         带图的请求收到 400/413/422 本身就足够可疑了（体积、格式、模型不收图），
+         降级重试一次几乎不会有副作用：摘掉图而已，路径还留在正文里。 */
+      const st = Number((e && (e.status || (e.error && e.error.status))) || 0);
+      const looksImagey = /image|vision|multimodal|unsupported|invalid.*content|content.*invalid|图片|多模态|不支持/i.test(msg);
+      if (!looksImagey && st !== 400 && st !== 413 && st !== 422) throw e;
       dropImages(args.messages);
       if (args.onDropImages) args.onDropImages();
       return chatOnce(args);

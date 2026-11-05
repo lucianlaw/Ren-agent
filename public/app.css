@@ -691,6 +691,17 @@ body.dark .pic-i img{background:var(--soft)}
 
 .model-note{font-size:10.5px;color:var(--mute);line-height:1.7;margin:-6px 0 12px;min-height:14px}
 
+/* 看图自检：默认收着，点开才占地方——它不是日常操作，是出问题时的探针 */
+.vision-check{display:flex;align-items:center;gap:8px;margin:-4px 0 10px;flex-wrap:wrap}
+.vision-check .btn{padding:3px 10px;font-size:11px}
+.vc-hint{font-size:10.5px;color:var(--mute)}
+.vc-out{
+  margin:0 0 12px;padding:9px 11px;border:1px solid #e6eaef;border-radius:8px;
+  background:#fafbfc;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:11px;line-height:1.75;color:#2b3240;white-space:pre-wrap;word-break:break-all;
+  max-height:260px;overflow:auto;
+}
+
 .tabs{display:flex;gap:2px;background:#f4f6f8;padding:2px;border-radius:7px;margin-left:auto}
 .tab{
   font-family:inherit;font-size:11px;color:var(--mute);background:transparent;border:none;

@@ -436,16 +436,25 @@ function getToken(uid) {
    服务端拿不到「哪些模型能看图」的能力清单。前端从完整列表里挑一个多模态的传上来。
    为什么不放进工具参数：工具参数是模型写的，让它自己指定模型等于把「用哪个通道花钱」
    交给它。这里只认发起任务时前端给的那个值。 */
-const VISION = new Map();     // scope -> model id
+const VISION = new Map();     // scope -> model id[]（按优先级）
 function setVisionModel(scope, model) {
+  /* 存的是一条候选链，不是一个名字。
+     原因很实在：通道不给能力位，前端只能按名字挑；名字沾上 vision 但实际不收图的
+     模型不是没有。只押一个，押错就是「400，看不了图」，而模型自己也不知道该换谁。
+     候选链让工具层能自己换一个再试，换到能看的为止。 */
   const k = String(scope || '').trim();
-  const m = String(model || '').trim().slice(0, 120);
-  if (!k || !m) return;
-  VISION.set(k, m);
+  const list = (Array.isArray(model) ? model : [model])
+    .map(x => String(x || '').trim().slice(0, 120)).filter(Boolean);
+  const uniq = [...new Set(list)].slice(0, 6);
+  if (!k || !uniq.length) return;
+  VISION.set(k, uniq);
   if (VISION.size > 5000) VISION.clear();   // 极端情况下别让这张表长成内存泄漏
 }
+function visionModelsOf(scope) {
+  return VISION.get(String(scope || '').trim()) || [];
+}
 function visionModelOf(scope) {
-  return VISION.get(String(scope || '').trim()) || '';
+  return visionModelsOf(scope)[0] || '';
 }
 
 /* 进行中的服务端任务：id -> ServerRun。
@@ -925,7 +934,10 @@ async function route(req, res) {
              模型名只认任务发起时记下的那个，不由工具参数决定——
              工具参数是模型写的，让它挑模型等于让它挑花哪条通道。 */
           llm: (name === 'view_image' && getToken(scope))
-            ? { endpoint: cloudEndpoint(), token: getToken(scope), accessKey: cloudKey(), model: visionModelOf(scope) }
+            ? {
+              endpoint: cloudEndpoint(), token: getToken(scope), accessKey: cloudKey(),
+              models: visionModelsOf(scope), model: visionModelOf(scope)
+            }
             : null
         });
 
@@ -1083,7 +1095,7 @@ async function route(req, res) {
       if (b.token) putToken(scope, b.token);
       /* 看图模型跟着这次任务记下来：view_image 在 /api/tool 里要用，
          而那条请求里不会带模型名（模型不能自己指定通道） */
-      if (b.visionModel) setVisionModel(scope, b.visionModel);
+      if (b.visionModels || b.visionModel) setVisionModel(scope, b.visionModels || b.visionModel);
       const token = getToken(scope);
       if (!token) {
         return send(res, 401, {

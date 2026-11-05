@@ -1242,14 +1242,22 @@ function modelOf(id) {
    而不是让员工回一句「我没收到图片」。 */
 const VISION_RE = /(gpt-4o|gpt-4\.1|gpt-4\.5|gpt-5|claude|gemini|qwen[\w.-]*vl|glm-4(\.\d)?v|doubao[\w.-]*(vision|vl)|internvl|llava|pixtral|moondream|multimodal|vision|omni)/i;
 const NOT_VISION_RE = /(audio|tts|whisper|embed|rerank|moderation)/i;
-function pickVisionModel() {
+const isVisionName = m => VISION_RE.test(`${m.id} ${m.name || ''} ${m.description || ''}`)
+  && !NOT_VISION_RE.test(`${m.id} ${m.name || ''} ${m.description || ''}`);
+
+/* 候选链而不是单个：按名字挑本来就不可靠（通道不给能力位），
+   押的这一个万一不收图，服务端还能往下换。当前模型排在最前面——
+   它要是本身能看图，就不该另外挑一条通道去花钱。 */
+function pickVisionModels() {
   const list = (state.models || []).filter(m => m && m.id);
-  const name = m => `${m.id} ${m.name || ''} ${m.description || ''}`;
-  const cur = state.settings.model;
-  const curM = list.find(m => m.id === cur);
-  if (curM && VISION_RE.test(name(curM)) && !NOT_VISION_RE.test(name(curM))) return cur;
-  const hit = list.find(m => VISION_RE.test(name(m)) && !NOT_VISION_RE.test(name(m)));
-  return hit ? hit.id : '';
+  const out = [];
+  const cur = list.find(m => m.id === state.settings.model);
+  if (cur && isVisionName(cur)) out.push(cur.id);
+  for (const m of list) if (isVisionName(m) && !out.includes(m.id)) out.push(m.id);
+  return out.slice(0, 4);
+}
+function pickVisionModel() {
+  return pickVisionModels()[0] || '';
 }
 function renderModelPill() {
   // 顶栏「全局模型」徽标显示的是全局默认模型名
@@ -6131,6 +6139,7 @@ async function agentRun(job) {
     /* 能看图的模型：服务端跑 view_image 时用。模型名不让工具参数决定，
        只认这里带上来的值。没有就留空，员工会被告知「看不了图」而不是瞎猜 */
     visionModel: pickVisionModel(),
+    visionModels: pickVisionModels(),
     tools: Array.isArray(window.CUSTOM_TOOLS) ? window.CUSTOM_TOOLS : []
   };
   let r;
@@ -7404,6 +7413,92 @@ function updateModelNote() {
     : '模型列表为空：先确认已登录、网络正常。';
 }
 if ($('#settingsBtn')) $('#settingsBtn').onclick = openSettings;
+
+/* ── 看图自检 ──
+   存在的理由：通道只标「支持工具调用」，没有「能不能收图」的能力位，
+   前端一直是按模型名猜的。猜错的表现就是一句「400，看不了图」，
+   而这句话既不像体积问题也不像模型不认，光看它定不了性。
+   这里跳过所有推测：当场画一张写着固定暗号的图，逐个候选模型真发一次。
+   能读出暗号 = 真能看图；报错 = 把通道原文原样摊出来。
+   测试图是 canvas 画的（几百字节），所以失败一定不是「图太大」。 */
+function visionTestImage() {
+  try {
+    const cv = document.createElement('canvas');
+    cv.width = 420; cv.height = 120;
+    const c = cv.getContext('2d');
+    c.fillStyle = '#ffffff'; c.fillRect(0, 0, 420, 120);
+    c.fillStyle = '#111111'; c.font = 'bold 46px sans-serif';
+    c.fillText('REN 7391', 24, 76);
+    return cv.toDataURL('image/jpeg', 0.9);
+  } catch { return ''; }
+}
+async function visionCheck() {
+  const btn = $('#visionCheckBtn');
+  const hint = $('#visionCheckHint');
+  const out = $('#visionOut');
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  out.hidden = false;
+  out.textContent = '';
+  hint.textContent = '正在试…（每个模型会真花一点 token）';
+  const lines = [];
+  const push = s => { lines.push(s); out.textContent = lines.join('\n'); };
+
+  const url = visionTestImage();
+  if (!url) { hint.textContent = '浏览器画不出测试图，自检跑不了'; btn.disabled = false; return; }
+
+  const cands = pickVisionModels();
+  push(`当前模型：${state.settings.model || '（未选）'}`);
+  push(`按名字挑出的候选：${cands.length ? cands.join(' / ') : '一个也没有'}`);
+  push('图里写的是 REN 7391，读对了才算真能看图。');
+  push('');
+  if (!cands.length) {
+    push('候选是 0：模型列表里没有名字像多模态的。换一个模型再试。');
+    hint.textContent = '候选为 0';
+    btn.disabled = false;
+    return;
+  }
+  for (const model of cands) {
+    const t0 = Date.now();
+    let got = '';
+    let err = '';
+    try {
+      const stream = CLOUD.chatStream({
+        model,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: '这张图上写的是什么字？只把字抄出来，不要解释。' },
+            { type: 'image_url', image_url: { url } }
+          ]
+        }],
+        max_tokens: 64
+      });
+      for await (const chunk of stream) {
+        const d = chunk && chunk.choices && chunk.choices[0] && chunk.choices[0].delta;
+        if (d && d.content) got += d.content;
+      }
+    } catch (e) {
+      err = String((e && (e.message || e.error)) || e || '未知错误');
+    }
+    const ms = Date.now() - t0;
+    if (got.trim()) {
+      const right = /7391/.test(got);
+      push(`${right ? '✅' : '⚠️'} ${model}  ${ms}ms  ${right ? '读对了' : '没读出暗号'}：${got.trim().slice(0, 80)}`);
+      if (!right) push('    通道收下了图但没读出来：多半是把图当成了普通附件，没真的看。');
+    } else if (err) {
+      push(`❌ ${model}  ${ms}ms  ${err.slice(0, 300)}`);
+    } else {
+      push(`❔ ${model}  ${ms}ms  通道收下了，但一个字都没回`);
+    }
+  }
+  push('');
+  push('结论：至少要有一个 ✅。全是 ❌ 就是这条通道没有真能收图的模型——');
+  push('      换模型，或者把图里的关键内容用文字发过来。');
+  hint.textContent = '自检完成';
+  btn.disabled = false;
+}
+if ($('#visionCheckBtn')) $('#visionCheckBtn').onclick = visionCheck;
 $('#modelSel').onchange = updateModelNote;
 $('#setSave').onclick = async () => {
   const patch = {

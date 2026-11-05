@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ren Agent</title>
-<link rel="stylesheet" href="./app.css?v=20261105H">
-<link rel="stylesheet" href="./admin.css?v=20261105H">
+<link rel="stylesheet" href="./app.css?v=20261105J">
+<link rel="stylesheet" href="./admin.css?v=20261105J">
 <script>
 /* 首帧就定好深浅色：启动屏是第一个可见画面，不能先白后黑闪一下 */
 try { if (localStorage.getItem('boss.theme') === 'dark') document.documentElement.classList.add('dark'); } catch (e) {}
@@ -657,6 +657,13 @@ try { if (localStorage.getItem('boss.theme') === 'dark') document.documentElemen
         <select id="modelSel"></select>
       </label>
       <p class="model-note" id="modelNote"></p>
+      <!-- 看图自检：通道不给「能不能看图」的能力位，只能真发一张图去试。
+           有它，「图片解析失败」这件事才有个能自己查的地方，而不是只能来问我。 -->
+      <div class="vision-check">
+        <button class="btn ghost sm" id="visionCheckBtn" type="button">看图自检</button>
+        <span class="vc-hint" id="visionCheckHint">发一张测试图给每个候选模型，看谁真的能读图</span>
+      </div>
+      <pre class="vc-out" id="visionOut" hidden></pre>
       <h3 class="set-h">任务：几步、多少 token</h3>
       <div class="lim-grid">
         <label class="f">最多走几步<input id="maxSteps" type="number" min="1" max="40" step="1" value="24"></label>
@@ -956,23 +963,23 @@ try { if (localStorage.getItem('boss.theme') === 'dark') document.documentElemen
   </div>
 </div>
 
-<script src="./cloud-config.js?v=20261105H"></script>
-<script src="./cloud.js?v=20261105H"></script>
-<script src="./session.js?v=20261105H"></script>
-<script src="./localfs.js?v=20261105H"></script>
-<script src="./roles.js?v=20261105H"></script>
-<script src="./states.js?v=20261105H"></script>
-<script src="./contract.js?v=20261105H"></script>
-<script src="./traits.js?v=20261105H"></script>
-  <script src="./nameorder.js?v=20261105H"></script>
-<script src="./attach.js?v=20261105H"></script>
-<script src="./voice.js?v=20261105H"></script>
-<script src="./judge.js?v=20261105H"></script>
-<script src="./evalkit.js?v=20261105H"></script>
-<script src="./agent.js?v=20261105H"></script>
-<script src="./meeting.js?v=20261105H"></script>
-<script src="./review.js?v=20261105H"></script>
-<script src="./app.js?v=20261105H"></script>
-<script src="./admin.js?v=20261105H"></script>
+<script src="./cloud-config.js?v=20261105J"></script>
+<script src="./cloud.js?v=20261105J"></script>
+<script src="./session.js?v=20261105J"></script>
+<script src="./localfs.js?v=20261105J"></script>
+<script src="./roles.js?v=20261105J"></script>
+<script src="./states.js?v=20261105J"></script>
+<script src="./contract.js?v=20261105J"></script>
+<script src="./traits.js?v=20261105J"></script>
+  <script src="./nameorder.js?v=20261105J"></script>
+<script src="./attach.js?v=20261105J"></script>
+<script src="./voice.js?v=20261105J"></script>
+<script src="./judge.js?v=20261105J"></script>
+<script src="./evalkit.js?v=20261105J"></script>
+<script src="./agent.js?v=20261105J"></script>
+<script src="./meeting.js?v=20261105J"></script>
+<script src="./review.js?v=20261105J"></script>
+<script src="./app.js?v=20261105J"></script>
+<script src="./admin.js?v=20261105J"></script>
 </body>
 </html>

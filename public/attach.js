@@ -26,11 +26,18 @@
     });
   }
 
-  /* 图片压一下再传：手机截图动辄 4-6MB，模型看 1400px 已经足够 */
+  /* 图片压一下再传：手机截图动辄 4-6MB，模型看 1400px 已经足够。
+     为什么这里要盯「base64 长度」而不是原图大小：请求体里带的是 base64，
+     它比原文件大 33%。通道对请求体有上限，超了返回的是 400——从错误里
+     看不出是体积问题，只会误判成「这个模型不支持图片」。所以这里定个硬上限，
+     超了就一直往下压，直到装得进去。 */
   async function shrinkImage(file, maxSide = 1400, quality = 0.82) {
     const url = await readAsDataURL(file);
     if (!/^data:image\/(png|jpeg|webp)/i.test(url)) return { dataUrl: url, name: file.name, size: file.size };
+    const LIMIT = 700 * 1024;        // dataURL 字符串长度上限（≈525KB 原图）
     try {
+      /* 小图原样发：PNG 图标、1x1 占位图这类转 JPEG 只会更糊更大 */
+      if (url.length <= LIMIT && file.size <= 400 * 1024) return { dataUrl: url, name: file.name, size: file.size };
       const img = await new Promise((res, rej) => {
         const im = new Image();
         im.onload = () => res(im);
@@ -38,17 +45,21 @@
         im.src = url;
       });
       const side = Math.max(img.width, img.height);
-      if (side <= maxSide && file.size <= 1.2 * 1024 * 1024) return { dataUrl: url, name: file.name, size: file.size };
-      const k = Math.min(1, maxSide / side);
-      const cv = document.createElement('canvas');
-      cv.width = Math.round(img.width * k);
-      cv.height = Math.round(img.height * k);
-      const ctx = cv.getContext('2d');
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, cv.width, cv.height);
-      ctx.drawImage(img, 0, 0, cv.width, cv.height);
-      const out = cv.toDataURL('image/jpeg', quality);
-      return { dataUrl: out, name: file.name.replace(/\.[^.]+$/, '') + '.jpg', size: Math.round(out.length * 0.75) };
+      const plan = [[maxSide, quality], [1200, 0.78], [1000, 0.72], [820, 0.66]];
+      let best = url;
+      for (const [max, q] of plan) {
+        const k = Math.min(1, max / side);
+        const cv = document.createElement('canvas');
+        cv.width = Math.max(1, Math.round(img.width * k));
+        cv.height = Math.max(1, Math.round(img.height * k));
+        const ctx = cv.getContext('2d');
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, cv.width, cv.height);
+        ctx.drawImage(img, 0, 0, cv.width, cv.height);
+        best = cv.toDataURL('image/jpeg', q);
+        if (best.length <= LIMIT) break;
+      }
+      return { dataUrl: best, name: file.name.replace(/\.[^.]+$/, '') + '.jpg', size: Math.round(best.length * 0.75) };
     } catch {
       return { dataUrl: url, name: file.name, size: file.size };
     }

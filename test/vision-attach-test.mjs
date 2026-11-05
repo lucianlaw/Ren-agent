@@ -100,10 +100,17 @@ console.log('看图工具');
 
 console.log('通道与权限边界');
 {
-  ok('模型名由任务发起时带给服务端', /visionModel: pickVisionModel\(\)/.test(appSrc));
-  ok('服务端只认发起时记下的模型', /function visionModelOf\(scope\)/.test(serverSrc)
+  ok('模型名由任务发起时带给服务端', /visionModels: pickVisionModels\(\)/.test(appSrc)
+    && /visionModel: pickVisionModel\(\)/.test(appSrc));
+  ok('服务端只认发起时记下的模型（存的是候选链）', /function visionModelsOf\(scope\)/.test(serverSrc)
     && /function setVisionModel\(scope, model\)/.test(serverSrc));
-  ok('工具参数不能指定模型（跑的是 ctx.llm.model）', /model: llm\.model/.test(read('lib/tools.js')));
+  /* 工具参数是模型写的，让它挑模型等于让它挑花哪条通道。
+     候选链只来自发起任务时前端给的那份，工具这边只负责挨个试。 */
+  const ts = read('lib/tools.js');
+  ok('看图模型来自候选链，不由工具参数决定', /for \(const model of cands\)/.test(ts)
+    && !/args\.(model|visionModel)/.test(ts));
+  ok('一个模型不收图就换下一个', /tried\.push/.test(ts) && /看图失败（试了 \$\{tried\.length\} 个模型）/.test(ts));
+  ok('凭证/额度类错误不换模型（换也没用）', /st === 401 \|\| st === 403 \|\| st === 429/.test(ts));
   ok('带附件才下发读图工具', /keep\.add\('view_image'\)/.test(agentSrc));
 }
 
