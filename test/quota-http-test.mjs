@@ -96,7 +96,9 @@ const srv = spawn(process.execPath, ['server.js'], {
     REN_DISK_MB: '1',
     REN_TOKEN_DAILY: '100000',
     REN_TOKEN_MONTHLY: '1000000',
-    REN_BACKUP_HOURS: '999'
+    REN_BACKUP_HOURS: '999',
+    /* 让定时器 1.5 秒后就检查一次，好在测试时间内验到「它真的会跑」 */
+    REN_BACKUP_FIRST_MS: '1500'
   },
   stdio: ['ignore', 'pipe', 'pipe']
 });
@@ -266,8 +268,18 @@ console.log('\n[5] 运维接口的鉴权');
   }
 }
 
-console.log('\n[6] 备份：能触发、能校验');
+console.log('\n[6] 备份：定时会自动跑，手动能触发，产物能校验');
 {
+  /* 先验定时器：一个只会「启动」不会「触发」的调度器，是最难发现的失效——
+     日志里写着「每 24 小时一次」，而去翻目录会发现一份都没有。 */
+  let auto = [];
+  for (let i = 0; i < 40; i++) {
+    auto = fs.readdirSync(BK).filter(f => f.endsWith('.tar.gz'));
+    if (auto.length) break;
+    await sleep(250);
+  }
+  ok('定时器真的触发了备份（不是只挂了个 setInterval）', auto.length >= 1, auto);
+
   const keyFile = path.join(SECRETS, 'alerts.key');
   const KEY = fs.existsSync(keyFile) ? fs.readFileSync(keyFile, 'utf8').trim() : '';
   if (KEY) {
