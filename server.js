@@ -41,6 +41,7 @@ import {
   listScopes, quickStats, usageDir, allLimitOverrides, fmtBytes
 } from './lib/quota.js';
 import { runBackup, verifyBackup, backupStatus, listBackups, scheduleBackups } from './lib/backup.js';
+import { streamProbe, probeHistory, probeBusy } from './lib/probe.js';
 import { previewOffice } from './lib/office.js';
 import { digestFiles } from './lib/digest.js';
 import { selfAuth, treeSrc, readSrc, grepSrc } from './lib/selfsrc.js';
@@ -389,7 +390,7 @@ const OPTIONAL_AUTH = new Set(['/api/alerts', '/api/alerts/ack', '/api/sandbox-c
   /* 运维接口：调用方可能是 cron（curl，没有浏览器登录态），凭证是随机落盘的运维 key。
      放进这个集合的语义是「闸门照常验，验不过也交给 handler 自己判」，
      不是「不需要凭证」——handler 里 adminOK 会逐条核对 key 或管理员身份。 */
-  '/api/admin/quota', '/api/admin/backup', '/api/admin/backup/verify']);
+  '/api/admin/quota', '/api/admin/backup', '/api/admin/backup/verify', '/api/admin/stream-probe']);
 
 
 /* ── 内部调用凭证 ──
@@ -1444,6 +1445,37 @@ async function route(req, res) {
       if (!file) return send(res, 400, { ok: false, error: '没有任何备份可校验' });
       const r = verifyBackup(file);
       return send(res, r.ok ? 200 : 409, { ...r, file });
+    }
+
+    /* ── 运维：长连接探针 ──
+       带 seconds 就开一条流，不带就返回历史。
+       存在的理由：SSE 的三种失效（空闲超时 / 总时长上限 / 缓冲）在日志里全都看不出来，
+       而「没报错」和「验证过」是两件事。有了它，换网关、改反代配置之后能当场复测，
+       而不是等用户报「界面卡住不动」。 */
+    if (u.pathname === '/api/admin/stream-probe' && req.method === 'GET') {
+      if (!adminOK(req, u)) return send(res, 403, { ok: false, error: 'key 不对或不是管理员' });
+      if (!u.searchParams.has('seconds')) {
+        return send(res, 200, {
+          ok: true,
+          running: probeBusy(),
+          history: probeHistory().slice(-5).reverse(),
+          hint: '带 ?seconds=600 开一条真流；客户端记录每个 beat 的到达时刻，两者相减得到延迟'
+        });
+      }
+      if (probeBusy()) {
+        return send(res, 409, { ok: false, error: '已经有一条探针在跑了，等它结束', running: probeBusy() });
+      }
+      const r = streamProbe(req, res, {
+        seconds: u.searchParams.get('seconds'),
+        pingMs: u.searchParams.get('pingMs'),
+        dataMs: u.searchParams.get('dataMs')
+      });
+      writeAudit({
+        kind: 'probe', scope: '', action: '长连接探针', target: r.id,
+        ok: true, blocked: false, output: `计划 ${Math.round(r.plannedMs / 1000)} 秒`,
+        ...clientMeta(req)
+      });
+      return;
     }
 
     /* 沙箱自检：不靠「配置看起来对了」，而是用降权后的身份去读它**不该**读到的东西。

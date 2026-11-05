@@ -5835,8 +5835,11 @@ function agentStop() {
    三种收尾都要分清：
      · 收到 end   → 任务正常收工
      · 流断了     → 只是这个页面的连接断了，任务还在服务端跑（不当作失败）
-     · 本地 abort → 用户主动停，已经发过 /stop，也不当作失败 */
-async function consumeRunStream(res, emitFn, signal) {
+     · 本地 abort → 用户主动停，已经发过 /stop，也不当作失败
+
+   reconnecting=true 表示这是重连上来的一次，断开时不再弹提示
+   （否则每失败一次弹一次，任务跑十分钟能弹出五六条一样的）。 */
+async function consumeRunStream(res, emitFn, signal, reconnecting = false) {
   let buf = '';
   const dec = new TextDecoder();
   let ended = false;
@@ -5864,10 +5867,54 @@ async function consumeRunStream(res, emitFn, signal) {
       }
     }
   } catch (e) {
-    if (!(e && e.name === 'AbortError') && !signal) toast('事件流断了，任务在服务端继续跑，刷新页面能接上');
+    if (!(e && e.name === 'AbortError') && !signal && !reconnecting) {
+      toast('事件流断了，正在自动重连（任务在服务端继续跑）');
+    }
   }
-  SRV.on = false;
+  /* SRV.on 在这里**不置 false**。
+     它的语义是「这个任务在服务端」，不是「这条连接还活着」。
+     流断的那一刻任务往往还在跑，如果置 false，接下来的插话和审批会走
+     BOSS.inject/BOSS.approve —— 也就是发给浏览器里那个已经不存在的本地任务，
+     结果是静默失效：用户以为话插进去了，其实没人收到。
+     谁真的结束才置 false，交给调用方在确定收工时做。 */
   return ended;
+}
+
+/* 断了就自己接回去，不等用户按刷新。
+   为什么必须自动：长任务的流断不是因为出错，是因为中间层有上限（空闲超时、
+   总时长、连接重建）。这是常态，不是异常。把它交给用户手动处理，等于把
+   「网关每 X 分钟抖一次」变成「用户每 X 分钟要刷新一次」。
+   续点是 SRV.seq：服务端从 from 之后补发，界面上不会丢步骤也不会重复。 */
+async function resumeRunStream(emitFn, signal) {
+  if (!SRV.runId) return false;
+  const waits = [1000, 2000, 4000, 8000, 15000];
+  for (let i = 0; i < waits.length; i++) {
+    await new Promise(r => setTimeout(r, waits[i]));
+    if (signal && signal.aborted) return false;
+    let r;
+    try {
+      r = await fetch(window.withSC(`/api/run/${encodeURIComponent(SRV.runId)}?from=${SRV.seq || 0}`), { signal });
+    } catch (e) {
+      if (e && e.name === 'AbortError') return false;
+      continue;   /* 网络还没好，按退避再来一次 */
+    }
+    /* 410 是「任务已经不在服务端了」，服务端还带了原因（是不是被重启打断）。
+       这种情况重连多少次都一样，直接收工并把原因说清楚。 */
+    if (r.status === 410 || r.status === 404) {
+      const j = await r.json().catch(() => null);
+      if (j && j.code === 'interrupted') toast(`任务中断：${j.error || '服务重启'}`);
+      SRV.on = false;
+      return false;
+    }
+    if (!r.ok) continue;
+    SRV.on = true;
+    const ended = await consumeRunStream(r, emitFn, signal, true);
+    if (ended) return true;
+  }
+  /* 五次都没接上：任务可能还在跑，也可能早就结束了，这里不做判断，
+     只告诉用户怎么把它捞回来。 */
+  toast('事件流反复断开，任务可能仍在服务端跑；刷新页面能接上现场');
+  return false;
 }
 
 /* 发起一条服务端执行。job 的结构和原来 BOSS.run 的入参一致，
@@ -5926,7 +5973,10 @@ async function agentRun(job) {
   SRV.on = true;
   SRV.runId = String(job.task.id || '');
   SRV.seq = 0;
-  return consumeRunStream(r, job.emit, job.signal);
+  const ended = await consumeRunStream(r, job.emit, job.signal);
+  if (ended) { SRV.on = false; return true; }
+  /* 流断了：任务还在服务端。接着上一次的 seq 自己接回去。 */
+  return resumeRunStream(job.emit, job.signal);
 }
 
 /* 重连：从 from 之后开始补。刷新页面后把已经发生过的步骤补出来，再接新的。 */
@@ -5936,7 +5986,9 @@ async function attachServerRun(runId, emitFn, signal, from) {
   SRV.on = true;
   SRV.runId = runId;
   SRV.seq = from || 0;
-  return consumeRunStream(r, emitFn, signal);
+  const ended = await consumeRunStream(r, emitFn, signal);
+  if (ended) { SRV.on = false; return true; }
+  return resumeRunStream(emitFn, signal);
 }
 
 /* ── 执行 ── */
