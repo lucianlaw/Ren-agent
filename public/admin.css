@@ -1,0 +1,381 @@
+/* 管理后台独立样式。
+   为什么不并进 app.css：主界面 2300 多行已经够挤，后台是一套独立布局（没有左栏 rail、
+   没有产出栏），混在一起以后谁都不敢动。这里只复用 :root 的颜色变量和 .btn / .f 这类原子类。 */
+
+/* ── 外壳 ── */
+.adm{position:fixed;inset:0;z-index:800;display:flex;background:var(--bg);color:var(--text)}
+.adm-side{
+  width:216px;flex:0 0 216px;display:flex;flex-direction:column;
+  background:var(--card);border-right:1px solid var(--line);padding:14px 10px 12px;
+}
+.adm-brand{display:flex;align-items:baseline;gap:7px;padding:0 8px 14px}
+.adm-brand b{font-size:15px;letter-spacing:-.3px}
+.adm-brand span{font-size:10px;color:var(--mute);background:var(--soft);padding:1px 6px;border-radius:4px}
+.adm-nav{display:flex;flex-direction:column;gap:2px;flex:1;min-height:0}
+.adm-nav-i{
+  display:flex;align-items:center;gap:9px;width:100%;padding:8px 10px;border:0;border-radius:8px;
+  background:transparent;font-family:inherit;font-size:12.5px;color:var(--sub);cursor:pointer;text-align:left;
+  transition:background .12s,color .12s;
+}
+.adm-nav-i i{font-style:normal;font-size:13px;color:var(--mute);width:14px;text-align:center}
+.adm-nav-i span{display:flex;flex-direction:column;line-height:1.35}
+.adm-nav-i em{font-style:normal;font-size:10px;color:var(--mute)}
+.adm-nav-i:hover{background:var(--soft);color:var(--text)}
+.adm-nav-i.on{background:var(--blue-soft);color:var(--blue-deep)}
+.adm-nav-i.on i{color:var(--blue)}
+.adm-nav-i.on em{color:var(--blue-deep);opacity:.75}
+.adm-side-foot{padding-top:10px;border-top:1px solid var(--line2)}
+
+.adm-main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
+.adm-head{
+  flex:0 0 auto;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;
+  padding:16px 24px 14px;background:var(--card);border-bottom:1px solid var(--line);
+}
+.adm-head-l{min-width:0}
+.adm-head h1{font-size:16px;font-weight:650;letter-spacing:-.2px}
+.adm-head p{font-size:11.5px;color:var(--mute);margin-top:3px;line-height:1.6}
+.adm-head-r{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.adm-acts{display:flex;align-items:center;gap:8px}
+/* 顶栏返回：常驻，不参与各页 actions 的替换 */
+.adm-back{background:var(--bg);border:1px solid var(--line)}
+.adm-back:hover{border-color:var(--mute);color:var(--text)}
+/* 质检台是搬进来的 <main class="main">：它自己带 flex:1，这里只把它按后台容器重新摆一次 */
+.adm-main > .main{flex:1;min-height:0;background:var(--bg)}
+.adm-main > .task-head{background:var(--card)}
+.adm-body{flex:1;min-height:0;overflow:auto;padding:18px 24px 40px}
+.adm-body.hide{display:none}
+
+/* ── 通用块 ── */
+.adm-sec{margin-bottom:22px}
+.adm-sec-hd{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:9px}
+.adm-sec-hd b{font-size:13px;font-weight:600}
+.adm-sec-hd span{font-size:11px;color:var(--mute)}
+.adm-card{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:14px 16px}
+.adm-hint{font-size:11px;color:var(--mute);line-height:1.7}
+.adm-empty{padding:26px 18px;text-align:center;color:var(--mute);font-size:12px;
+  border:1px dashed var(--line);border-radius:11px;background:var(--card)}
+
+/* 同步失败留下的常驻提示：toast 一闪就没，失败原因得让人看得见 */
+.adm-warn{
+  display:flex;align-items:flex-start;gap:8px;margin-bottom:9px;padding:8px 10px;
+  font-size:11.5px;line-height:1.6;color:var(--amber);
+  background:var(--amber-soft);border-radius:9px;
+}
+.adm-warn-x{
+  margin-left:auto;flex:0 0 auto;border:0;background:none;cursor:pointer;
+  color:var(--amber);font-size:14px;line-height:1;padding:0 2px;opacity:.7;
+}
+.adm-warn-x:hover{opacity:1}
+
+/* ── 1. 模型接入 ── */
+.adm-ch-tag{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;padding:1px 7px;border-radius:20px;line-height:1.7}
+.adm-ch-live{background:var(--green-soft);color:var(--green)}
+.adm-ch-off{background:var(--soft);color:var(--mute)}
+.adm-ch-live::before,.adm-ch-off::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor}
+.adm-route{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:900px){.adm-route{grid-template-columns:1fr}}
+.adm-rt{display:flex;gap:12px;align-items:flex-start}
+.adm-rt-ic{
+  width:34px;height:34px;flex:0 0 34px;border-radius:9px;display:flex;align-items:center;justify-content:center;
+  background:var(--blue-soft);color:var(--blue-deep);font-size:15px;
+}
+.adm-rt-b{min-width:0;flex:1}
+.adm-rt-t{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.adm-rt-t b{font-size:12.5px;font-weight:600}
+.adm-rt-d{font-size:11px;color:var(--mute);margin-top:3px;line-height:1.65}
+.adm-rt-kv{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
+.adm-kv{font-size:10.5px;color:var(--sub);background:var(--soft);border-radius:5px;padding:1px 6px}
+.adm-kv b{color:var(--text);font-weight:600}
+
+.adm-tbl{width:100%;border-collapse:collapse;font-size:11.5px}
+.adm-tbl th{
+  text-align:left;font-weight:500;color:var(--mute);font-size:10.5px;letter-spacing:.3px;
+  padding:0 10px 7px;border-bottom:1px solid var(--line);white-space:nowrap;
+}
+.adm-tbl td{padding:8px 10px;border-bottom:1px solid var(--line2);color:var(--sub);vertical-align:middle}
+.adm-tbl tr:last-child td{border-bottom:0}
+.adm-tbl td b{color:var(--text);font-weight:600}
+.adm-tbl .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;color:var(--mute)}
+.adm-tbl tr.off td{opacity:.55}
+
+/* 自带 Key 表单 */
+.adm-keyform{display:grid;grid-template-columns:1.1fr 1.4fr 1.6fr auto;gap:10px;align-items:end}
+@media (max-width:1000px){.adm-keyform{grid-template-columns:1fr 1fr}}
+.adm-keyform .f{margin:0}
+.adm-keyform input,.adm-keyform select{
+  width:100%;padding:6px 9px;font-family:inherit;font-size:11.5px;border-radius:7px;
+  border:1px solid var(--line);background:var(--bg);color:var(--text);
+}
+.adm-keyform input:disabled,.adm-keyform select:disabled{opacity:.5;cursor:not-allowed}
+.adm-note-bar{
+  display:flex;gap:9px;align-items:flex-start;margin-top:12px;padding:9px 12px;border-radius:8px;
+  background:var(--amber-soft);color:var(--amber);font-size:11px;line-height:1.7;
+}
+
+/* ── 2. 标准员工 ── */
+.adm-split{display:flex;gap:14px;align-items:flex-start;min-height:0}
+.adm-list-col{width:262px;flex:0 0 262px;display:flex;flex-direction:column;gap:8px}
+.adm-list-search input{
+  width:100%;padding:6px 10px;border-radius:8px;border:1px solid var(--line);
+  background:var(--card);font-family:inherit;font-size:11.5px;color:var(--text);
+}
+.adm-std-list{display:flex;flex-direction:column;gap:6px;max-height:calc(100vh - 220px);overflow:auto;padding-right:2px}
+.adm-std{
+  display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:9px;cursor:pointer;
+  border:1px solid var(--line);background:var(--card);transition:.12s;
+}
+.adm-std:hover{border-color:var(--blue);background:var(--blue-soft)}
+.adm-std.on{border-color:var(--blue);background:var(--blue-soft)}
+.adm-std-av{
+  width:26px;height:26px;flex:0 0 26px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  background:var(--soft);color:var(--sub);font-size:11.5px;font-weight:600;
+}
+.adm-std.on .adm-std-av,.adm-std:hover .adm-std-av{background:var(--blue);color:#fff}
+.adm-std-b{min-width:0;flex:1}
+.adm-std-n{font-size:12px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:5px}
+.adm-std-r{font-size:10.5px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.adm-std-flag{font-size:9.5px;padding:0 5px;border-radius:4px;background:var(--soft);color:var(--mute);font-weight:400}
+.adm-std-flag.draft{background:var(--amber-soft);color:var(--amber)}
+.adm-edit-col{flex:1;min-width:0;display:flex;flex-direction:column;gap:12px}
+
+.adm-form-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+@media (max-width:1100px){.adm-form-row{grid-template-columns:1fr 1fr}}
+.adm-card .f{margin-bottom:10px}
+.adm-card .f:last-child{margin-bottom:0}
+.adm-card input[type=text],.adm-card input:not([type]),.adm-card textarea,.adm-card select,
+.adm-form-row input,.adm-form-row select{
+  width:100%;padding:6px 9px;font-family:inherit;font-size:11.5px;border-radius:7px;
+  border:1px solid var(--line);background:var(--bg);color:var(--text);
+}
+.adm-card textarea{resize:vertical;line-height:1.7}
+.adm-foot-act{display:flex;align-items:center;gap:8px;justify-content:flex-end;padding-top:2px}
+.adm-foot-act .grow{flex:1}
+
+/* 记忆 */
+.adm-mem-hd{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.adm-mem-add{display:flex;gap:8px;align-items:flex-start;margin-bottom:10px}
+.adm-mem-add select{
+  width:106px;flex:0 0 106px;padding:6px 8px;border-radius:7px;border:1px solid var(--line);
+  background:var(--bg);color:var(--text);font-family:inherit;font-size:11.5px;
+}
+.adm-mem-add textarea{
+  flex:1;padding:6px 9px;border-radius:7px;border:1px solid var(--line);background:var(--bg);
+  color:var(--text);font-family:inherit;font-size:11.5px;resize:vertical;line-height:1.7;min-height:34px;
+}
+.adm-mem{display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-radius:8px;background:var(--bg);
+  border:1px solid var(--line2);margin-bottom:6px}
+.adm-mem:last-child{margin-bottom:0}
+.adm-mem-k{
+  flex:0 0 auto;font-size:10px;padding:0 6px;border-radius:4px;line-height:1.8;font-weight:500;
+  background:var(--soft);color:var(--sub);
+}
+.adm-mem-k.rule{background:var(--red-soft);color:var(--red)}
+.adm-mem-k.exp{background:var(--green-soft);color:var(--green)}
+.adm-mem-k.pref{background:var(--blue-soft);color:var(--blue-deep)}
+.adm-mem-k.fact{background:var(--amber-soft);color:var(--amber)}
+.adm-mem-t{flex:1;min-width:0;font-size:11.5px;color:var(--sub);line-height:1.7;white-space:pre-wrap;word-break:break-word}
+.adm-mem-t textarea{
+  width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--line);
+  background:var(--card);color:var(--text);font-family:inherit;font-size:11.5px;resize:vertical;line-height:1.7;
+}
+.adm-mem-act{display:flex;gap:4px;flex:0 0 auto;opacity:.4;transition:.12s}
+.adm-mem:hover .adm-mem-act{opacity:1}
+.adm-mem-x{border:0;background:transparent;color:var(--mute);font-size:11px;cursor:pointer;padding:2px 4px;border-radius:4px;font-family:inherit}
+.adm-mem-x:hover{background:var(--soft);color:var(--text)}
+.adm-mem-x.del:hover{color:var(--red)}
+
+/* 同步结果 */
+.adm-sync{display:flex;flex-direction:column;gap:6px;font-size:11.5px;color:var(--sub)}
+.adm-sync-i{display:flex;gap:7px;align-items:baseline}
+.adm-sync-i i{font-style:normal;flex:0 0 auto;width:12px}
+.adm-sync-i.ok i{color:var(--green)}
+.adm-sync-i.skip i{color:var(--mute)}
+.adm-sync-i.bad i{color:var(--red)}
+
+/* ── 3. Agent 逻辑 ── */
+.adm-tabs{display:flex;gap:4px;margin-bottom:14px;border-bottom:1px solid var(--line)}
+.adm-tab{
+  border:0;background:transparent;font-family:inherit;font-size:12px;color:var(--mute);cursor:pointer;
+  padding:7px 12px;border-bottom:2px solid transparent;margin-bottom:-1px;
+}
+.adm-tab.on{color:var(--blue-deep);border-bottom-color:var(--blue);font-weight:600}
+.adm-flow{display:flex;flex-direction:column;gap:0}
+.adm-fl{
+  display:flex;gap:14px;align-items:flex-start;cursor:pointer;margin-bottom:8px;
+}
+.adm-fl-rail{width:26px;flex:0 0 26px;display:flex;flex-direction:column;align-items:center}
+.adm-fl-n{
+  width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:10.5px;font-weight:600;background:var(--card);border:1px solid var(--line);color:var(--mute);
+  transition:.12s;
+}
+.adm-fl.on .adm-fl-n{background:var(--blue);border-color:var(--blue);color:#fff}
+.adm-fl.phase .adm-fl-n{background:var(--blue-soft);border-color:var(--blue);color:var(--blue-deep)}
+.adm-fl-link{width:1px;flex:1;min-height:14px;background:var(--line);margin:3px 0}
+.adm-fl-card{
+  flex:1;min-width:0;background:var(--card);border:1px solid var(--line);border-radius:10px;
+  padding:10px 13px;transition:.12s;
+}
+.adm-fl:hover .adm-fl-card{border-color:var(--blue)}
+.adm-fl.on .adm-fl-card{border-color:var(--blue);box-shadow:0 0 0 2px var(--blue-soft)}
+.adm-fl-t{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.adm-fl-t b{font-size:12.5px;font-weight:600}
+.adm-fl-d{font-size:11px;color:var(--mute);margin-top:3px;line-height:1.7}
+.adm-fl-d code{background:var(--soft);color:var(--sub);font-size:10.5px;padding:0 4px;border-radius:3px}
+.adm-fl-p{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
+.adm-fl-p span{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--soft);color:var(--sub)}
+.adm-fl-p span b{color:var(--text);font-weight:600}
+.adm-fl-p span.warn{background:var(--amber-soft);color:var(--amber)}
+.adm-fl-p span.stop{background:var(--red-soft);color:var(--red)}
+.adm-branch{margin-left:14px;padding-left:12px;border-left:1px dashed var(--line)}
+.adm-legend{display:flex;gap:14px;flex-wrap:wrap;font-size:10.5px;color:var(--mute);margin-bottom:12px}
+.adm-legend i{font-style:normal;display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.adm-legend .l1 i{background:var(--blue)}
+.adm-legend .l2 i{background:var(--amber)}
+.adm-legend .l3 i{background:var(--red)}
+.adm-param{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.adm-pm{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:9px 11px}
+.adm-pm-k{font-size:10.5px;color:var(--mute)}
+.adm-pm-v{font-size:15px;font-weight:650;color:var(--text);font-variant-numeric:tabular-nums;line-height:1.4}
+.adm-pm-v small{font-size:10.5px;font-weight:400;color:var(--mute);margin-left:2px}
+.adm-pm-s{font-size:10px;color:var(--mute);margin-top:2px}
+
+/* ── 深色补丁：app.css 里 .rail / .task-head 是硬编码白底，后台沿用的部分要跟上变量 ── */
+html.dark .adm-head,html.dark .adm-main > .task-head{background:var(--card)}
+html.dark .adm-card input,html.dark .adm-card textarea,html.dark .adm-card select,
+html.dark .adm-form-row input,html.dark .adm-form-row select,
+html.dark .adm-mem,html.dark .adm-keyform input,html.dark .adm-keyform select{background:var(--bg)}
+
+@media (max-width:760px){
+  .adm-side{width:62px;flex:0 0 62px;padding:12px 6px}
+  .adm-brand span,.adm-nav-i em,.adm-brand b{display:none}
+  .adm-nav-i span{display:none}
+  .adm-nav-i{justify-content:center;padding:10px 0}
+  .adm-body{padding:14px 14px 32px}
+  .adm-head{padding:12px 14px}
+  .adm-split{flex-direction:column}
+  .adm-list-col{width:100%;flex:0 0 auto}
+}
+
+/* ══════════ 用户端共用件：标准员工库 ══════════
+   这段是给主界面用的（左栏入口条 + 取用弹层），放这里的唯一理由是
+   app.css 已经 2300 多行，再加一段「跟后台同源」的样式更容易被改坏。
+   命名统一用 std- / stdlib- 前缀，不会和主界面其他类冲突。 */
+.std-bar{
+  display:flex;align-items:center;gap:8px;padding:7px 9px;margin:0 2px 8px;border-radius:8px;
+  border:1px dashed var(--line);background:var(--card);cursor:pointer;transition:.12s;
+}
+.std-bar:hover{border-color:var(--blue);background:var(--blue-soft)}
+.std-bar-i{color:var(--blue);font-size:11px;width:13px;text-align:center;flex:0 0 13px}
+.std-bar-t{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.4}
+.std-bar-t b{font-size:11.5px;color:var(--text);font-weight:600}
+.std-bar-t em{font-style:normal;font-size:10px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.std-bar-go{color:var(--mute);font-size:14px;line-height:1;flex:0 0 auto}
+
+.stdlib-modal{width:660px;max-width:94vw}
+.stdlib-list{max-height:54vh;overflow:auto;display:flex;flex-direction:column;gap:8px;margin-top:10px;padding-right:2px}
+.stdlib-i{
+  display:flex;gap:11px;align-items:flex-start;padding:10px 12px;
+  border:1px solid var(--line);border-radius:10px;background:var(--bg);
+}
+.stdlib-av{
+  width:32px;height:32px;flex:0 0 32px;border-radius:50%;background:var(--blue-soft);color:var(--blue-deep);
+  display:flex;align-items:center;justify-content:center;font-weight:600;font-size:13px;
+}
+.stdlib-b{flex:1;min-width:0}
+.stdlib-n{font-size:12.5px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.stdlib-tag{font-size:9.5px;font-weight:400;padding:0 5px;border-radius:4px;background:var(--soft);color:var(--mute)}
+.stdlib-d{font-size:10.5px;color:var(--mute);margin-top:3px;line-height:1.6}
+.stdlib-quote{
+  font-size:11px;color:var(--sub);margin-top:6px;padding-left:8px;
+  border-left:2px solid var(--line);line-height:1.7;
+}
+html.dark .stdlib-i{background:var(--bg)}
+
+/* ── 5. 积分与充值 ── */
+.adm-qr2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:900px){.adm-qr2{grid-template-columns:1fr}}
+.adm-qrbox{background:var(--bg);border:1px solid var(--line2);border-radius:10px;padding:10px}
+.adm-qrbox-hd{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.adm-qrbox-hd b{font-size:11.5px;font-weight:600}
+.adm-qr-up{
+  font-size:10.5px;color:var(--blue-deep);background:var(--blue-soft);
+  border-radius:20px;padding:2px 9px;cursor:pointer;
+}
+.adm-qr-up:hover{filter:brightness(.97)}
+.adm-qrprev{
+  height:118px;border-radius:8px;background:var(--card);border:1px dashed var(--line);
+  display:flex;align-items:center;justify-content:center;overflow:hidden;margin-bottom:7px;
+}
+.adm-qrprev img{max-width:100%;max-height:100%;object-fit:contain}
+.adm-qrprev span{font-size:10.5px;color:var(--mute)}
+.adm-qrurl{
+  width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;
+  padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--sub);
+  resize:vertical;
+}
+.adm-plan-hd,.adm-plan-row{display:grid;grid-template-columns:1fr 1fr 46px;gap:8px;align-items:center}
+.adm-plan-hd{margin-bottom:5px}
+.adm-plan-hd span{font-size:10.5px;color:var(--mute)}
+.adm-plan-row{margin-bottom:6px}
+.adm-plan-row input{
+  width:100%;padding:6px 9px;font-family:inherit;font-size:11.5px;border-radius:7px;
+  border:1px solid var(--line);background:var(--bg);color:var(--text);
+}
+.adm-plan-del{justify-self:start}
+
+/* ── 账号台账（积分与充值页） ──────────────────────────────────
+   用户ID 是管理员要输的那个号，账户ID 是钱落在哪本账上，两列都用等宽字体，
+   免得 U000001 和 UOO0001 这种看混。对账列正常显示「平」，不平才出数字并标红。 */
+.adm-acct-tbl{font-size:11px}
+.adm-acct-tbl th{white-space:nowrap}
+.adm-acct-tbl td{padding:7px 8px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.adm-acct-row{cursor:pointer}
+.adm-acct-row:hover td{background:var(--soft)}
+.adm-acct-tbl .adm-dim{color:var(--mute)}
+.adm-acct-tbl .adm-low{color:var(--amber)}
+.adm-acct-tbl .adm-bad{color:var(--red);font-weight:700}
+.adm-acct-tbl .adm-ok{color:var(--green)}
+
+/* ── Agent 逻辑：改后 / 改前 左右对照 ────────────────────────────────────
+   为什么这么排：光看新版分不出「哪几步是这次长出来的」。左边放现在跑的链路，
+   右边放上一版——新增的步骤右边留一个虚线空槽（不写字，免得被当成「被删掉的东西」），
+   修改的两边都有、底下补一行「改了什么」。旧文案一条都没删，只是右移。 */
+.adm-cmp{display:flex;flex-direction:column;gap:7px}
+.adm-cmp-head,.adm-cmp-row{display:grid;grid-template-columns:56px minmax(0,1fr) minmax(0,1fr);gap:9px}
+.adm-cmp-head{padding:0 0 6px;border-bottom:1px solid var(--line);margin-bottom:2px}
+.adm-cmp-head>div{padding-left:2px}
+.adm-cmp-head b{font-size:11.5px;font-weight:600;color:var(--text)}
+.adm-cmp-head span{font-size:10px;color:var(--mute);margin-left:6px}
+.adm-cmp-row{align-items:stretch;padding:3px 2px;cursor:pointer;border-radius:8px;transition:background .12s}
+.adm-cmp-row:hover{background:var(--soft)}
+.adm-cmp-k{display:flex;flex-direction:column;align-items:center;gap:5px;padding-top:9px}
+.adm-cmp-k i{font-style:normal;font-size:9.5px;color:var(--mute);font-variant-numeric:tabular-nums}
+.adm-mk{font-size:9.5px;line-height:1.6;padding:0 5px;border-radius:4px;font-weight:600;white-space:nowrap}
+.adm-mk.new{background:var(--green-soft);color:var(--green)}
+.adm-mk.chg{background:var(--amber-soft);color:var(--amber)}
+.adm-mk.keep{background:var(--soft);color:var(--mute);font-weight:500}
+.adm-mk.gone{background:var(--red-soft);color:var(--red)}
+.adm-cmp-c{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:9px 11px;min-height:54px}
+.adm-cmp-c.old{background:transparent;border-style:dashed;border-color:var(--line2)}
+.adm-cmp-c.old .adm-fl-t b{color:var(--sub);font-weight:500}
+.adm-cmp-c.old .adm-fl-d{opacity:.82}
+.adm-cmp-c.old .adm-fl-p span{background:transparent;border:1px dashed var(--line2)}
+.adm-cmp-row.on .adm-cmp-c.neu{border-color:var(--blue);box-shadow:0 0 0 2px var(--blue-soft)}
+/* 空槽：细斜纹 + 虚线边，一眼看出「这里什么都没有」，又不会被当成一张空卡。
+   不写任何字——写「旧版没有」只会让人以为那儿原本有个被删掉的东西。 */
+.adm-cmp-blank{
+  border:1px dashed var(--line);border-radius:8px;min-height:54px;
+  background:repeating-linear-gradient(135deg,var(--bg) 0 7px,var(--soft) 7px 8px);
+}
+.adm-cmp-why{margin-top:7px;padding:7px 9px;border-radius:6px;background:var(--blue-soft);color:var(--blue-deep);font-size:10.5px;line-height:1.75}
+.adm-cmp-c.old .adm-cmp-why{background:transparent;border:1px dashed var(--line2);color:var(--mute)}
+.adm-cmp-chg{grid-column:2 / -1;font-size:10px;color:var(--amber);line-height:1.65;padding:0 2px 1px}
+.adm-cmp-sum{font-size:10.5px;color:var(--mute);padding-top:9px;border-top:1px solid var(--line);margin-top:6px;line-height:1.7}
+@media (max-width:940px){
+  .adm-cmp-head,.adm-cmp-row{grid-template-columns:46px minmax(0,1fr)}
+  .adm-cmp-head>div:nth-child(3){display:none}
+  .adm-cmp-row>.adm-cmp-c.old{grid-column:2}
+  .adm-cmp-blank{display:none}
+  .adm-cmp-chg{grid-column:2}
+}

@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ren Agent · 三栏布局 demo</title>
+<style>
+:root{
+  --bg:#f7f8fa; --card:#fff; --line:#e6e8eb; --line2:#eef0f2;
+  --text:#1f2329; --sub:#5c6470; --mute:#8f97a3;
+  --blue:#1a8fd1; --blue-soft:#eaf5fc; --blue-deep:#0f6f9f;
+  --green:#16a34a; --green-soft:#e8f6ee;
+  --amber:#c2740a; --amber-soft:#fdf3e2;
+  --red:#d13636; --red-soft:#fdecec;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+  background:var(--bg);color:var(--text);font-size:13px;line-height:1.65;
+  -webkit-font-smoothing:antialiased;overflow:hidden;
+}
+[hidden]{display:none!important}
+button{font-family:inherit}
+
+/* 顶栏 */
+.app{display:flex;flex-direction:column;height:100vh}
+.topbar{
+  flex:0 0 46px;display:flex;align-items:center;gap:10px;padding:0 16px;
+  background:#fff;border-bottom:1px solid var(--line);
+}
+.brand{font-size:13.5px;font-weight:600;letter-spacing:-.2px}
+.brand .ver{font-size:10px;color:var(--mute);font-weight:400;margin-left:3px}
+.top-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.pill{font-size:11px;color:var(--blue-deep);background:var(--blue-soft);border-radius:12px;padding:2px 9px}
+.perm{font-size:10.5px;color:var(--mute);border:1px solid var(--line);background:#fff;border-radius:20px;padding:1px 8px}
+.perm.on{color:var(--green);border-color:#cfe9da;background:var(--green-soft)}
+.btn{font-size:11.5px;padding:4px 11px;border:1px solid var(--line);background:#fff;border-radius:7px;color:var(--sub);cursor:pointer}
+.btn:hover{background:#f6f8fa}
+.btn.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+.btn.primary:hover{background:#1583c2}
+.btn.tiny{font-size:10.5px;padding:2px 8px;border-radius:6px}
+.user{font-size:11px;color:var(--sub);background:#f2f4f6;border-radius:20px;padding:2px 10px}
+
+.demo-tip{
+  flex:0 0 auto;background:#fffdf5;border-bottom:1px solid #f0e6c8;color:#8a6a24;
+  font-size:11px;padding:4px 16px;
+}
+
+.layout{flex:1;display:flex;min-height:0}
+
+/* 左栏 */
+.rail{
+  width:248px;flex:0 0 248px;background:#fbfcfd;border-right:1px solid var(--line);
+  display:flex;flex-direction:column;min-height:0;
+}
+.tabs{display:flex;gap:2px;padding:8px 8px 4px}
+.tab{
+  flex:1;border:0;background:transparent;font-size:11.5px;color:var(--mute);
+  padding:5px 0;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;
+}
+.tab:hover{color:var(--sub)}
+.tab.on{background:#fff;color:var(--blue-deep);box-shadow:0 1px 3px rgba(20,30,45,.08);font-weight:500}
+.tab i{font-style:normal;font-size:9px;color:var(--mute);background:#eef1f4;border-radius:8px;padding:0 4px;min-width:14px;text-align:center}
+.tab.on i{background:var(--blue-soft);color:var(--blue-deep)}
+.rail-head{
+  height:32px;flex:0 0 32px;display:flex;align-items:center;justify-content:space-between;
+  padding:0 12px;font-size:10.5px;color:var(--mute)
+}
+.rail-head .action{color:var(--blue-deep);background:var(--blue-soft);border-color:#cbe7f6}
+.list{flex:1;overflow-y:auto;padding:0 8px 10px}
+.rail-foot{
+  flex:0 0 auto;padding:7px 12px;border-top:1px solid var(--line);
+  font-size:10px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+
+/* 列表项 */
+.row{
+  padding:8px 9px;border:1px solid transparent;border-radius:8px;cursor:pointer;margin-bottom:2px;
+}
+.row:hover{background:#fff;border-color:var(--line)}
+.row.on{background:#fff;border-color:#cfdde8;box-shadow:0 1px 3px rgba(20,30,45,.04)}
+.row-t{font-size:12.5px;line-height:1.4;display:flex;align-items:center;gap:5px}
+.row-t b{flex:1;min-width:0;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row-m{font-size:10px;color:var(--mute);margin-top:2px;display:flex;gap:5px;align-items:center}
+.dot{width:5px;height:5px;border-radius:50%;flex:0 0 5px;background:#c3c9d2}
+.dot.done{background:var(--green)}
+.dot.running{background:var(--blue)}
+.dot.blocked{background:var(--amber)}
+
+/* 员工行 */
+.srow{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:8px;cursor:pointer;border:1px solid transparent;margin-bottom:1px}
+.srow:hover{background:#fff;border-color:var(--line)}
+.srow.on{background:#fff;border-color:#cfdde8;box-shadow:0 1px 3px rgba(20,30,45,.04)}
+.sav{
+  width:30px;height:30px;flex:0 0 30px;border-radius:50%;background:#e4eefb;color:#2b6f96;
+  display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:500;
+}
+.sav.human{background:#f4f0e4;color:#8a6a24}
+.sm{flex:1;min-width:0}
+.sn{font-size:12.5px;display:flex;align-items:center;gap:4px;color:var(--text);min-width:0}
+.sn b{flex:1;min-width:0;font-size:12.5px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sr{font-size:10px;color:var(--mute);margin-top:1px}
+.tag-ai{font-style:normal;font-size:8.5px;padding:0 3px;border-radius:3px;flex:0 0 auto}
+.tag-ai.ai{background:#e8f2fd;color:#2b6f96}
+.tag-ai.human{background:#f4f0e4;color:#8a6a24}
+.tag-core{font-style:normal;font-size:8.5px;padding:0 3px;border-radius:3px;background:#fdeee9;color:#a8482c;flex:0 0 auto}
+
+/* 主区 */
+.main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
+.head{
+  flex:0 0 auto;padding:14px 22px 12px;background:#fff;border-bottom:1px solid var(--line);
+  display:flex;justify-content:space-between;align-items:flex-start;gap:16px;
+}
+.head h1{font-size:15px;font-weight:600;letter-spacing:-.1px;line-height:1.4;display:flex;align-items:center;gap:6px}
+.head .meta{font-size:11.5px;color:var(--mute);margin-top:3px;line-height:1.6;max-width:640px}
+.head .right{flex:0 0 auto;display:flex;gap:14px;text-align:right;align-items:center}
+.stat b{display:block;font-size:13px;font-weight:500;font-variant-numeric:tabular-nums}
+.stat span{font-size:9.5px;color:var(--mute)}
+.people{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.mp{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;color:var(--sub);background:#f6f8fa;border-radius:12px;padding:1px 8px 1px 2px}
+.mp i{font-style:normal;width:15px;height:15px;border-radius:50%;background:#e4eefb;color:#2b6f96;display:inline-flex;align-items:center;justify-content:center;font-size:9px}
+.mp i.human{background:#f4f0e4;color:#8a6a24}
+.mp em{font-style:normal;color:var(--mute);font-size:9.5px}
+.mp-add{display:inline-flex;align-items:center;justify-content:center;width:19px;height:19px;padding:0;border-radius:50%;cursor:pointer;border:1px dashed #c3ced9;background:#fff;color:var(--mute);font-size:12px;line-height:1}
+.mp-add:hover{border-color:var(--blue);color:var(--blue-deep);background:var(--blue-soft)}
+
+.body{flex:1;overflow-y:auto;padding:14px 22px 18px}
+
+/* 会议气泡 */
+.sec{margin-bottom:12px}
+.who{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--sub);margin-bottom:5px}
+.av{font-style:normal;width:17px;height:17px;border-radius:50%;background:#e4eefb;color:#2b6f96;display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;flex:0 0 17px}
+.av.boss{background:#1f2329;color:#fff}
+.tag{font-size:9px;color:var(--blue-deep);background:var(--blue-soft);padding:0 5px;border-radius:3px}
+.tag.grey{background:#f2f4f6;color:#5c6470}
+.card{
+  background:#fff;border:1px solid var(--line);border-left:2px solid var(--blue);border-radius:0 9px 9px 0;
+  padding:11px 14px;font-size:12.5px;line-height:1.8;color:var(--text);
+}
+.card.boss{border-left-color:#c9ced6;background:#fafbfc;font-size:12px}
+.card.pt{border-left-color:#9ec8e0}
+.card p{margin:0 0 8px}
+.card p:last-child{margin-bottom:0}
+.card b{font-weight:700;color:#1d2b3f}
+.k{display:block;font-size:9.5px;color:var(--mute);letter-spacing:.4px;margin-bottom:2px}
+.blk{margin-top:10px;padding-top:8px;border-top:1px dashed var(--line2)}
+.li{font-size:11.5px;color:var(--sub);line-height:1.8}
+.li.boss{color:#a8482c}
+.todo-h,.todo{display:grid;grid-template-columns:1fr 88px 108px;gap:8px;font-size:11px;align-items:start}
+.todo-h{color:var(--mute);font-size:9.5px;padding:2px 0}
+.todo{padding:4px 0;border-top:1px solid var(--line2);color:var(--sub)}
+.todo span:first-child{color:var(--text)}
+.todo span:nth-child(2){color:#2b6f96}
+
+/* 输入区 */
+.composer{flex:0 0 auto;border-top:1px solid var(--line);background:#fff;padding:10px 22px 12px}
+.crow{display:flex;align-items:center;gap:8px}
+.who-l{font-size:11px;color:var(--blue-deep);background:var(--blue-soft);border-radius:14px;padding:3px 9px;white-space:nowrap}
+.input{flex:1;border:1px solid var(--line);border-radius:20px;padding:7px 14px;font-size:12.5px;color:var(--mute);background:#fcfdfe}
+.csub{display:flex;justify-content:space-between;font-size:10px;color:var(--mute);margin-top:6px;padding:0 4px}
+
+/* 员工详情 */
+.cards{padding:16px 22px 24px;overflow-y:auto;flex:1}
+.dcard{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:12px}
+.dcard-t{font-size:10px;color:var(--mute);letter-spacing:.4px;margin-bottom:9px;display:flex;align-items:center;gap:6px}
+.dcard-t em{font-style:normal;color:#a8b2bd}
+.drow{display:flex;align-items:center;gap:12px;padding:6px 0;font-size:12px;border-bottom:1px solid var(--line2)}
+.drow:last-child{border-bottom:none}
+.drow .dk{flex:0 0 52px;font-size:10.5px;color:var(--mute)}
+.drow .dv{flex:1;min-width:0;color:var(--text)}
+.drow select{font-family:inherit;font-size:11.5px;color:var(--sub);border:1px solid var(--line);border-radius:6px;padding:2px 6px;background:#fff}
+.notes{font-size:12px;color:var(--sub);line-height:1.85;white-space:pre-wrap}
+.bigav{width:46px;height:46px;border-radius:50%;flex:0 0 46px;background:#e4eefb;color:#2b6f96;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:500}
+.bigav.human{background:#f4f0e4;color:#8a6a24}
+.headline{display:flex;align-items:center;gap:12px}
+.headline h1{font-size:16px;font-weight:600}
+
+/* 任务轨迹 */
+.step{background:#fff;border:1px solid var(--line);border-radius:8px;padding:9px 12px;margin-bottom:7px}
+.step-h{display:flex;align-items:center;gap:8px;font-size:11.5px}
+.stn{width:17px;height:17px;border-radius:5px;background:#f2f4f6;color:var(--sub);display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;flex:0 0 17px}
+.step-h b{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#1d2b3f;font-weight:600}
+.arg{font-size:10.5px;color:var(--mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.msi{margin-left:auto;font-size:9.5px;color:var(--mute);font-variant-numeric:tabular-nums}
+.ok{font-size:10px;color:var(--green)}
+.out{margin-top:6px;padding-top:6px;border-top:1px dashed var(--line2);font-size:11.5px;color:var(--sub);line-height:1.75}
+.result{background:#fff;border:1px solid var(--line);border-left:2px solid var(--green);border-radius:0 9px 9px 0;padding:12px 14px;font-size:12.5px;line-height:1.85}
+.result p{margin:0 0 8px}
+.result p:last-child{margin-bottom:0}
+.empty{padding:56px 20px;text-align:center;color:var(--mute);font-size:11.5px;line-height:1.9}
+.empty b{display:block;font-size:13px;color:var(--sub);font-weight:500;margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">Ren&nbsp;Agent <span class="ver">v0.4 demo</span></div>
+    <div class="top-right">
+      <span class="pill">GLM-5.3-Flash</span>
+      <span class="perm on">读文件</span>
+      <span class="perm on">写文件</span>
+      <span class="perm">跑命令</span>
+      <span class="btn ghost" style="border:0">产出</span>
+      <span class="btn ghost" style="border:0">设置</span>
+      <span class="user">未登录</span>
+    </div>
+  </header>
+
+  <div class="demo-tip">布局 demo：数据都是假的。点左边三个 tab 切换；点员工名字看档案，点任务名字看明细；卡片里的按钮只做展示，还没接功能。</div>
+
+  <div class="layout">
+    <aside class="rail">
+      <div class="tabs" id="tabs">
+        <button class="tab on" data-view="meeting">会议<i id="c-mt">1</i></button>
+        <button class="tab" data-view="staff">员工<i id="c-st">5</i></button>
+        <button class="tab" data-view="task">任务<i id="c-tk">4</i></button>
+      </div>
+      <div class="rail-head">
+        <span id="railHint">共 1 场</span>
+        <button class="btn tiny action" id="railAction">＋ 召集会议</button>
+      </div>
+      <div class="list" id="list"></div>
+      <div class="rail-foot">私有工作区 · aa6118</div>
+    </aside>
+    <main class="main" id="pane"></main>
+  </div>
+</div>
+
+<script>
+/* ── 假数据 ── */
+const STAFF = [
+  { id:'s1', name:'周砚', role:'秘书', persona:'成熟', desc:'稳重、有分寸、先讲影响面', kind:'ai', core:true, model:'跟随全局', served:3,
+    notes:'先给结论再给依据。拆任务时按「能验证」拆，不要按「听起来完整」拆。' },
+  { id:'s2', name:'秦律', role:'法务', persona:'严谨', desc:'抠条款、只认条文和惯例', kind:'ai', core:true, model:'跟随全局', served:2,
+    notes:'条款风险必须引具条文或惯例来源。涉及对外承诺只给方案和红线，不替老板拍板。' },
+  { id:'s3', name:'何算', role:'财务', persona:'锋利', desc:'先算钱、给算式和口径', kind:'ai', core:true, model:'跟随全局', served:2,
+    notes:'算钱必须给算式和口径；涉及总成本要摊运费、看起订量。' },
+  { id:'s4', name:'雷研', role:'技术', persona:'锋利', desc:'讲可行性、盯人力与节奏', kind:'ai', core:false, model:'跟随全局', served:2, notes:'' },
+  { id:'s5', name:'沈运', role:'运营', persona:'成熟', desc:'盯落地、盯一线执行', kind:'human', core:false, model:'', served:1,
+    notes:'真人成员，只在会议里接待办，不跑模型。' }
+];
+
+const MEETINGS = [
+  { id:'m1', topic:'研发一款家庭机器人', status:'已出纪要', people:['周砚','秦律','何算','雷研'], ai:4, human:0 }
+];
+
+const TASKS = [
+  { id:'t1', title:'折算报价表并出华东最优方案', status:'done', statusText:'已完成', who:'何算', tokens:12400, ms:'86s',
+    meta:'把三家供应商的报价按到岸总成本折算，排出华东最优的三档，结论写进 报价结论.md',
+    steps:[
+      { n:1, name:'read_file', arg:'报价表.xlsx', ms:'118ms', ok:true, out:'读到 3 个 sheet：报价、运费、起订量，共 218 行' },
+      { n:2, name:'run_shell', arg:'python3 normalize.py', ms:'640ms', ok:true, out:'折算完成：12 个 SKU × 3 家 = 36 行到岸成本，输出 normalized.csv' },
+      { n:3, name:'write_file', arg:'报价结论.md', ms:'21ms', ok:true, out:'写入 1.9 KB · 3 档方案 + 口径说明' },
+      { n:4, name:'verify', arg:'报价结论.md 存在且提到 25,600', ms:'4ms', ok:true, out:'交付物校验通过' }
+    ],
+    result:'<p><b>华东最优：A 供应商 3.20 元/件，25,600 元起订，是唯一同时满足单价与账期的组合。</b></p><p>B 家单价低 0.08，但运费摊下来反超 0.12；C 家账期 90 天，资金占用折算后总成本最高。</p><p>建议先按 A 家 25,600 起订量下一次单，预留 B 家做二供。</p>' },
+  { id:'t2', title:'把会议待办派成 8 个任务', status:'done', statusText:'已完成', who:'周砚', tokens:3200, ms:'12s',
+    meta:'把「研发一款家庭机器人」这场会的待办拆成可派发的任务，每个都要有人和时间',
+    steps:[
+      { n:1, name:'read_file', arg:'会议纪要.md', ms:'9ms', ok:true, out:'8 条待办，其中 3 条缺负责人' },
+      { n:2, name:'write_file', arg:'待办派发.md', ms:'18ms', ok:true, out:'8 个任务，按负责人分组' }
+    ],
+    result:'<p><b>8 个任务已进任务池，其中 5 个有明确负责人，3 个待你点名。</b></p><p>缺人的三条：品牌命名、渠道谈判、售后网点规划。</p>' },
+  { id:'t3', title:'出原型阶段的隐私合规红线清单', status:'running', statusText:'执行中', who:'秦律', tokens:6800, ms:'—',
+    meta:'按个人信息保护要求，列出原型阶段碰不得的红线，写成清单给技术侧',
+    steps:[
+      { n:1, name:'search', arg:'个人信息保护 家庭场景 采集', ms:'1.2s', ok:true, out:'命中 6 条相关条款与 2 个处罚案例' },
+      { n:2, name:'write_file', arg:'合规红线.md', ms:'—', ok:false, out:'正在写…' }
+    ],
+    result:'' },
+  { id:'t4', title:'测算 300 万预算下的人力配比', status:'blocked', statusText:'等授权', who:'何算', tokens:2100, ms:'—',
+    meta:'300 万预算内，12 人还是 18 人，按单场景和全场景各算一版',
+    steps:[
+      { n:1, name:'read_file', arg:'预算表.xlsx', ms:'22ms', ok:true, out:'读到底薪、社保、外包三块口径' },
+      { n:2, name:'run_shell', arg:'python3 payroll.py', ms:'—', ok:false, out:'需要「跑命令」权限，被红线拦下' }
+    ],
+    result:'' }
+];
+
+/* ── 状态 ── */
+let view = 'meeting';
+let curStaffId = 's2';
+let curTaskId = 't1';
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+
+const ACTION = { meeting:'＋ 召集会议', staff:'＋ 新建员工', task:'＋ 新建任务' };
+const HINT = { meeting:() => `共 ${MEETINGS.length} 场`, staff:() => `共 ${STAFF.length} 人`, task:() => `共 ${TASKS.length} 个` };
+
+/* ── 左栏 ── */
+function renderRail() {
+  document.querySelectorAll('#tabs .tab').forEach(b => b.classList.toggle('on', b.dataset.view === view));
+  $('#c-mt').textContent = MEETINGS.length;
+  $('#c-st').textContent = STAFF.length;
+  $('#c-tk').textContent = TASKS.length;
+  $('#railHint').textContent = HINT[view]();
+  $('#railAction').textContent = ACTION[view];
+
+  const box = $('#list');
+  if (view === 'meeting') {
+    box.innerHTML = MEETINGS.map(m => `
+      <div class="row on" data-mid="${m.id}">
+        <div class="row-t"><i class="dot running"></i><b>${esc(m.topic)}</b></div>
+        <div class="row-m"><span>${m.status}</span><span>· ${m.ai} AI${m.human ? ' +' + m.human + ' 真人' : ''}</span></div>
+      </div>`).join('') + '<div class="row" style="cursor:default;opacity:.55"><div class="row-t"><b style="font-weight:400;font-size:11.5px">＋ 再开一场会</b></div></div>';
+  } else if (view === 'staff') {
+    box.innerHTML = STAFF.map(e => `
+      <div class="srow ${e.id === curStaffId ? 'on' : ''}" data-sid="${e.id}">
+        <div class="sav ${e.kind === 'human' ? 'human' : ''}">${esc(e.name.slice(0, 1))}</div>
+        <div class="sm">
+          <div class="sn"><b>${esc(e.name)}</b><i class="tag-ai ${e.kind === 'human' ? 'human' : 'ai'}">${e.kind === 'human' ? '真人' : 'AI'}</i>${e.core ? '<i class="tag-core">核心</i>' : ''}</div>
+          <div class="sr">${esc(e.role)} · ${esc(e.persona)}</div>
+        </div>
+      </div>`).join('');
+    box.querySelectorAll('.srow').forEach(n => {
+      n.onclick = () => { curStaffId = n.dataset.sid; render(); };
+    });
+  } else {
+    box.innerHTML = TASKS.map(t => `
+      <div class="row ${t.id === curTaskId ? 'on' : ''}" data-tid="${t.id}">
+        <div class="row-t"><i class="dot ${t.status}"></i><b>${esc(t.title)}</b></div>
+        <div class="row-m"><span>${t.statusText}</span><span>· ${esc(t.who)}</span><span>· ${t.tokens} tok</span></div>
+      </div>`).join('');
+    box.querySelectorAll('.row[data-tid]').forEach(n => {
+      n.onclick = () => { curTaskId = n.dataset.tid; render(); };
+    });
+  }
+}
+
+/* ── 中间栏 ── */
+function renderPane() {
+  const p = $('#pane');
+  if (view === 'meeting') p.innerHTML = paneMeeting();
+  else if (view === 'staff') p.innerHTML = paneStaff();
+  else p.innerHTML = paneTask();
+
+  p.querySelectorAll('[data-goto-task]').forEach(n => {
+    n.onclick = () => { view = 'task'; curTaskId = n.dataset.gotoTask; render(); };
+  });
+  p.querySelectorAll('[data-goto-staff]').forEach(n => {
+    n.onclick = () => { view = 'staff'; curStaffId = n.dataset.gotoStaff; render(); };
+  });
+}
+
+function paneMeeting() {
+  const m = MEETINGS[0];
+  const chips = ['周砚|秘书', '秦律|法务', '何算|财务', '雷研|技术'].map(x => {
+    const [n, r] = x.split('|');
+    return `<span class="mp"><i>${n.slice(0, 1)}</i>${n}<em>${r}</em></span>`;
+  }).join('') + '<button class="mp-add" title="增加参会人员">＋</button>';
+
+  return `
+  <header class="head">
+    <div>
+      <h1>${esc(m.topic)}</h1>
+      <div class="meta">秘书 周砚 主持 · 参会 4 人（AI 4）· 首期以 500 万以内预算做可行性验证，12 个月内交付可演示原型</div>
+      <div class="people">${chips}</div>
+    </div>
+    <div class="right">
+      <div class="stat"><b>已出纪要</b><span>状态</span></div>
+      <div class="stat"><b>5851</b><span>tokens</span></div>
+      <div class="stat"><b>246s</b><span>耗时</span></div>
+      <span class="btn tiny" style="border:0;color:var(--mute)">删除</span>
+    </div>
+  </header>
+
+  <div class="body">
+    <div class="sec">
+      <div class="who"><i class="av boss">板</i>老板<span class="tag grey">会上说</span></div>
+      <div class="card boss">把预算砍到 300 万，先只做原型验证，砍掉小批量生产那部分。</div>
+    </div>
+
+    <div class="sec">
+      <div class="who"><i class="av">何</i>何算 · 财务</div>
+      <div class="card pt"><p><b>认，但只能认到 300 万这个数，不能认「砍掉小批量就够」这个说法。</b></p>
+        <p>300 万要拆成：样机 BOM 约 90 万（3 台 × 30 万）、人力 12 人 × 12 个月约 160 万、认证与测试 40 万，合计 290 万，只剩 10 万缓冲——任何一项超支都会断。建议认证与测试砍到 25 万，留 25 万缓冲。</p></div>
+    </div>
+
+    <div class="sec">
+      <div class="who"><i class="av">秦</i>秦律 · 法务</div>
+      <div class="card pt"><p>砍掉小批量不改变合规义务。只要做原型并采集真实家庭数据，个人信息保护要求就不变。</p>
+        <p>300 万预算里必须留出隐私合规评估的钱，否则原型阶段就有处罚风险。</p></div>
+    </div>
+
+    <div class="sec">
+      <div class="who"><i class="av">雷</i>雷研 · 技术</div>
+      <div class="card pt"><p>300 万做原型可行，但要把「可演示」降级成「单场景可演示」。</p>
+        <p>12 个月全场景原型，团队至少 18 人；12 人只能做清洁这一个场景。</p></div>
+    </div>
+
+    <div class="sec">
+      <div class="who"><i class="av">周</i>周砚 · 秘书<span class="tag">收口</span></div>
+      <div class="card">
+        <p><b>结论：300 万可以做，但只能做单场景原型，且必须留 25 万合规与缓冲。</b></p>
+        <p>分歧在一处：雷研认为 12 个月全场景需要 18 人，何算的预算只覆盖 12 人——两人对「原型」的范围定义不一致，这需要你定。</p>
+        <p>下一步：先确认原型范围是单场景还是全场景，再按范围回填预算表。</p>
+        <div class="blk"><span class="k">只有你能拍的</span>
+          <div class="li boss">· 原型范围定单场景还是全场景——这决定 12 人还是 18 人</div>
+        </div>
+        <div class="blk"><span class="k">这一轮的待办</span>
+          <div class="todo-h"><span>做什么</span><span>谁</span><span>什么时候</span></div>
+          <div class="todo"><span>按单场景口径重出一版 300 万预算表</span><span>何算</span><span>本周五前</span></div>
+          <div class="todo"><span>出具原型阶段的隐私合规红线清单</span><span>秦律</span><span>预算表定稿后 3 天</span></div>
+          <div class="todo"><span>把「单场景可演示」拆成可验收的里程碑</span><span>雷研</span><span>下周一会前</span></div>
+          <span class="btn tiny" style="margin-top:10px">把待办变成任务</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="composer">
+    <div class="crow">
+      <span class="who-l">全体参会 4 人</span>
+      <div class="input">在会上说一句：在座同事都会各自回应，秘书最后收口成待办。</div>
+      <button class="btn primary">发送</button>
+    </div>
+    <div class="csub"><span>表态和汇总交给他们，你只管拍板；要落地就把待办派成任务。</span></div>
+  </div>`;
+}
+
+function paneStaff() {
+  const e = STAFF.find(x => x.id === curStaffId) || STAFF[0];
+  const human = e.kind === 'human';
+  const mine = TASKS.filter(t => t.who === e.name);
+
+  return `
+  <header class="head">
+    <div>
+      <div class="headline">
+        <div class="bigav ${human ? 'human' : ''}">${esc(e.name.slice(0, 1))}</div>
+        <div>
+          <h1>${esc(e.name)}<i class="tag-ai ${human ? 'human' : 'ai'}">${human ? '真人' : 'AI'}</i>${e.core ? '<i class="tag-core">核心</i>' : ''}</h1>
+          <div class="meta">${esc(e.role)} · ${esc(e.persona)} ${human ? '· 只在会议里接待办，不跑模型' : ''}</div>
+        </div>
+      </div>
+    </div>
+    <div class="right">
+      <span class="btn tiny">编辑</span>
+      <span class="btn tiny" style="border:0;color:var(--mute)">删除</span>
+    </div>
+  </header>
+
+  <div class="cards">
+    <div class="dcard">
+      <div class="dcard-t">档案</div>
+      <div class="drow"><span class="dk">岗位</span><span class="dv">${esc(e.role)}</span></div>
+      <div class="drow"><span class="dk">类型</span><span class="dv">${human ? '真人成员，不跑模型，只接会议待办' : 'AI 员工，有自己的模型和说话风格'}</span></div>
+      <div class="drow"><span class="dk">人设</span><span class="dv">${esc(e.persona)} —— ${esc(e.desc)}</span></div>
+      <div class="drow"><span class="dk">模型</span><span class="dv">${human ? '—' : `<select><option>跟随全局 · GLM-5.3-Flash</option><option>DeepSeek-V4.1-Flash</option><option>Qwen3-Max</option></select>`}</span></div>
+      <div class="drow"><span class="dk">在会</span><span class="dv">参与过 ${e.served} 场会</span></div>
+    </div>
+
+    ${e.notes ? `<div class="dcard">
+      <div class="dcard-t">老板的交代</div>
+      <div class="notes">${esc(e.notes)}</div>
+    </div>` : ''}
+
+    <div class="dcard">
+      <div class="dcard-t">手上的任务 ${mine.length ? `<em>${mine.length}</em>` : ''}</div>
+      ${mine.length ? mine.map(t => `
+        <div class="row" style="padding:7px 6px" data-goto-task="${t.id}">
+          <div class="row-t"><i class="dot ${t.status}"></i><b>${esc(t.title)}</b></div>
+          <div class="row-m"><span>${t.statusText}</span><span>· ${t.tokens} tok</span><span style="margin-left:auto;color:var(--blue-deep)">看明细 →</span></div>
+        </div>`).join('') : '<div class="notes" style="color:var(--mute)">还没有任务派给这位。</div>'}
+    </div>
+  </div>`;
+}
+
+function paneTask() {
+  const t = TASKS.find(x => x.id === curTaskId) || TASKS[0];
+  return `
+  <header class="head">
+    <div>
+      <h1>${esc(t.title)}</h1>
+      <div class="meta">${esc(t.meta)}</div>
+    </div>
+    <div class="right">
+      <div class="stat"><b>${t.statusText}</b><span>状态</span></div>
+      <div class="stat"><b>${t.tokens}</b><span>tokens</span></div>
+      <div class="stat"><b>${t.ms}</b><span>耗时</span></div>
+      <span class="btn tiny" data-goto-staff="${(STAFF.find(s => s.name === t.who) || {}).id}" style="border:0;color:var(--blue-deep)">${esc(t.who)} →</span>
+    </div>
+  </header>
+
+  <div class="body">
+    ${t.steps.map(s => `
+      <div class="step">
+        <div class="step-h">
+          <span class="stn">${s.n}</span><b>${esc(s.name)}</b><span class="arg">${esc(s.arg)}</span>
+          <span class="msi">${s.ms}</span><span class="ok">${s.ok ? '✓' : '…'}</span>
+        </div>
+        <div class="out">${esc(s.out)}</div>
+      </div>`).join('')}
+    ${t.result ? `<div class="sec" style="margin-top:14px">
+      <div class="who"><span class="tag">结论</span></div>
+      <div class="result">${t.result}</div>
+    </div>` : ''}
+  </div>
+
+  <div class="composer">
+    <div class="crow">
+      <span class="who-l">接着跟 ${esc(t.who)} 说</span>
+      <div class="input">接着跟 ${esc(t.who)} 说。会写进这个任务，不新建；前面的结论和文件它都还记得。</div>
+      <button class="btn primary">继续</button>
+    </div>
+    <div class="csub"><span>交付物（可空；这里填了会覆盖本任务的交付物清单）</span><span>⌘ + Enter 执行</span></div>
+  </div>`;
+}
+
+function render() { renderRail(); renderPane(); }
+
+$('#tabs').addEventListener('click', e => {
+  const b = e.target.closest('.tab');
+  if (!b) return;
+  view = b.dataset.view;
+  render();
+});
+
+$('#railAction').onclick = () => {
+  alert(view === 'meeting' ? '这里会弹「召集会议」（选参会人 + 会议主题）'
+    : view === 'staff' ? '这里会弹「新建员工」（岗位 + 人设 + 模型）'
+      : '这里会开一个新任务');
+};
+
+render();
+</script>
+</body>
+</html>

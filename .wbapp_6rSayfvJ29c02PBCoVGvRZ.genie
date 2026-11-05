@@ -1,0 +1,5 @@
+appId: wbapp_6rSayfvJ29c02PBCoVGvRZ
+name: Boss Agent
+localDir: /Users/maffia/WorkBuddy/2026-10-29-16-01-55/outputs/agent-core
+appType: web
+entryHtml: index.html

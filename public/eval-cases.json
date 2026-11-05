@@ -1,0 +1,627 @@
+{
+  "version": 5,
+  "note": "评测题库。题目跟代码一起版本化：改断言要单独一次改动，不允许跟着功能顺手改，否则「通过率变好」可能只是标准变松了。v3 给每道题补了 rubric、difficulty 与 tags。v4 新增 task-isolation：不调模型、只验「跑着的任务/项目不许把内容写进另一个」这条接线，属于新增题而不是放宽旧标准（旧题的断言一个字没动）。 v5 新增 orchestration-governance：不调模型，验 states.js / contract.js 这条治理层（三套状态归一、非法迁移被拒、心跳判活、契约带验收口径、没落盘不许算完成）。同样是新增题，旧题的断言一个字没动。",
+  "rubricDefaults": {
+    "dims": [
+      {
+        "key": "fact",
+        "name": "事实正确性",
+        "weight": "essential",
+        "desc": "内容里的数字、名称、结论与题目要求一致，没有算错、没有答非所问"
+      },
+      {
+        "key": "complete",
+        "name": "完整性",
+        "weight": "important",
+        "desc": "题目点名的要素全部覆盖，没有整段缺失"
+      },
+      {
+        "key": "usable",
+        "name": "可执行性",
+        "weight": "important",
+        "desc": "拿过来就能直接用：结构清楚、有结论、不空话"
+      }
+    ],
+    "veto": "编造了题目或上下文里不存在的事实（虚构数据、虚构来源、把没做的事说成做完了）"
+  },
+  "cases": [
+    {
+      "id": "md-note",
+      "title": "写一句话日记存 md",
+      "smoke": true,
+      "difficulty": "L1",
+      "tags": [
+        "基础链路"
+      ],
+      "why": "最短链路：模型 → 工具 → 落盘。这条挂了说明基础链路坏了，别的不用看。",
+      "goal": "写一句话的工作日记，保存成 day.md",
+      "k": 3,
+      "maxMs": 60000,
+      "rubric": {
+        "ref": "一句具体的工作内容（今天做了什么、结果如何），不是「今天工作顺利」这类空话。"
+      },
+      "assertions": [
+        {
+          "type": "noFail"
+        },
+        {
+          "type": "file",
+          "match": "day\\.md$"
+        },
+        {
+          "type": "maxMs",
+          "ms": 60000
+        }
+      ]
+    },
+    {
+      "id": "task-isolation",
+      "title": "分任务隔离：A 在跑，B 不许被写脏",
+      "smoke": true,
+      "localOnly": true,
+      "difficulty": "L1",
+      "tags": [
+        "自检",
+        "隔离",
+        "不调模型"
+      ],
+      "why": "线上真踩过：A 任务跑着时点开 B，A 的 gen_image / make_deck、PPT 结论全写进了 B 的对话和数据库。这题不调模型，只验接线，几十毫秒跑完；回归时先看它——它挂了，别的题跑得再漂亮也不算数。",
+      "goal": "",
+      "k": 1,
+      "maxMs": 10000,
+      "rubric": null,
+      "assertions": [
+        {
+          "type": "runBinding"
+        },
+        {
+          "type": "projectBinding"
+        }
+      ]
+    },
+    {
+      "id": "doc-summary",
+      "title": "写总结出 Word",
+      "smoke": true,
+      "difficulty": "L1",
+      "tags": [
+        "文档",
+        "docx"
+      ],
+      "why": "docx 生成 + 内容可解析。曾经出现「文件在但预览空」。",
+      "goal": "写一段一百字的工作总结，生成 word 文档，文件名 summary.docx",
+      "k": 3,
+      "maxMs": 120000,
+      "rubric": {
+        "ref": "约一百字的工作总结：写清了做了什么、结果如何，有段落结构，不是只有标题或占位符。"
+      },
+      "assertions": [
+        {
+          "type": "noFail"
+        },
+        {
+          "type": "file",
+          "match": "summary\\.docx$"
+        },
+        {
+          "type": "chars",
+          "match": "summary\\.docx$",
+          "min": 60
+        },
+        {
+          "type": "maxMs",
+          "ms": 120000
+        }
+      ]
+    },
+    {
+      "id": "deck-3p",
+      "title": "做 3 页 PPT",
+      "smoke": true,
+      "difficulty": "L2",
+      "tags": [
+        "演示",
+        "pptx"
+      ],
+      "why": "pptx 页数断言。曾经把模板页码占位符当成要点渲染。",
+      "goal": "做一份三页的季度复盘 PPT，文件名 review.pptx",
+      "k": 2,
+      "maxMs": 180000,
+      "rubric": {
+        "ref": "三页分别对应现状/问题、复盘结论、下一步动作；每页有标题和要点，不是「点击添加文本」这类占位符。"
+      },
+      "assertions": [
+        {
+          "type": "noFail"
+        },
+        {
+          "type": "file",
+          "match": "review\\.pptx$"
+        },
+        {
+          "type": "slides",
+          "match": "review\\.pptx$",
+          "min": 3
+        },
+        {
+          "type": "maxMs",
+          "ms": 180000
+        }
+      ]
+    },
+    {
+      "id": "sheet-quote",
+      "title": "做报价表 xlsx",
+      "smoke": true,
+      "difficulty": "L2",
+      "tags": [
+        "表格",
+        "xlsx"
+      ],
+      "why": "表格行数断言。曾经 xlsx 能生成但列错位。",
+      "goal": "做一张保温杯报价表，包含项目、单价、数量、小计四列，三行数据，文件名 quote.xlsx",
+      "k": 2,
+      "maxMs": 120000,
+      "rubric": {
+        "ref": "四列齐全（项目/单价/数量/小计），三行数据，每行小计 = 单价 × 数量，数值量级合理。"
+      },
+      "assertions": [
+        {
+          "type": "noFail"
+        },
+        {
+          "type": "file",
+          "match": "quote\\.xlsx$"
+        },
+        {
+          "type": "rows",
+          "match": "quote\\.xlsx$",
+          "min": 4
+        },
+        {
+          "type": "maxMs",
+          "ms": 120000
+        }
+      ]
+    },
+    {
+      "id": "round-isolation",
+      "title": "两轮追问，产出不许串轮",
+      "smoke": true,
+      "difficulty": "L2",
+      "tags": [
+        "多轮",
+        "分轮隔离"
+      ],
+      "why": "这是你已经踩到过的真 bug：第二轮把第一轮的图带出来了。",
+      "goal": "写一句工作日记，保存成 r1.md",
+      "then": "再写一句不同的工作日记，保存成 r2.md",
+      "k": 2,
+      "maxMs": 180000,
+      "rubric": {
+        "ref": "r1.md 与 r2.md 都存在，内容不相同，第二轮没有覆盖或污染第一轮的产出。"
+      },
+      "assertions": [
+        {
+          "type": "noFail"
+        },
+        {
+          "type": "file",
+          "match": "r1\\.md$"
+        },
+        {
+          "type": "file",
+          "match": "r2\\.md$"
+        },
+        {
+          "type": "rounds",
+          "min": 2
+        },
+        {
+          "type": "roundIsolation"
+        },
+        {
+          "type": "maxMs",
+          "ms": 180000
+        }
+      ]
+    },
+    {
+      "id": "verify-verdict",
+      "title": "验收必须真给出结论",
+      "smoke": true,
+      "difficulty": "L2",
+      "tags": [
+        "验收",
+        "推理模型"
+      ],
+      "why": "踩过的真 bug：验收人是推理模型，结论进了 reasoning_content、或被 700 token 的预算截断，解析不出 JSON，好活被判成「未验证」还退回重做了一遍。",
+      "goal": "写一段两百字左右的市场分析，说明今年家用咖啡机市场为什么在涨，保存成 coffee.md",
+      "k": 2,
+      "maxMs": 120000,
+      "rubric": {
+        "ref": "约两百字，给出至少两个具体原因（如居家办公带动、消费升级、供应链国产化、渠道下沉），最后有明确结论。"
+      },
+      "assertions": [
+        {
+          "type": "noFail"
+        },
+        {
+          "type": "file",
+          "match": "coffee\\.md$"
+        },
+        {
+          "type": "chars",
+          "match": "coffee\\.md$",
+          "min": 100
+        },
+        {
+          "type": "verifyClean"
+        },
+        {
+          "type": "maxMs",
+          "ms": 120000
+        }
+      ]
+    },
+    {
+      "id": "work-not-talk",
+      "title": "派活要真调工具，不许只表态",
+      "smoke": true,
+      "difficulty": "L1",
+      "tags": [
+        "工具调用"
+      ],
+      "why": "项目线 @ 干活曾经只回「认 / 不认 / 有条件认」，一步工具没调、产出为零。光看正文分不出来，得数工具步。",
+      "goal": "把本周待办整理成一份清单，保存成 todo.md，每条一行",
+      "k": 2,
+      "maxMs": 90000,
+      "rubric": {
+        "ref": "清单是具体待办（每条能干），每条一行，不少于三条，不是「已收到您的需求」这类表态。"
+      },
+      "assertions": [
+        {
+          "type": "noFail"
+        },
+        {
+          "type": "usedTools",
+          "min": 1
+        },
+        {
+          "type": "file",
+          "match": "todo\\.md$"
+        },
+        {
+          "type": "noStaleTalk"
+        },
+        {
+          "type": "maxMs",
+          "ms": 90000
+        }
+      ]
+    },
+    {
+      "id": "verify-long",
+      "title": "长交付下验收仍要给结论",
+      "smoke": false,
+      "difficulty": "L3",
+      "tags": [
+        "验收",
+        "长上下文",
+        "docx"
+      ],
+      "why": "验收人要读的文件越长、上下文越长，越容易被截断。这条专门压那个边界，短题压不出来。",
+      "goal": "写一份八百字左右的竞品分析，比较三款家用咖啡机，生成 word 文档，文件名 comp.docx",
+      "k": 1,
+      "maxMs": 240000,
+      "rubric": {
+        "ref": "三款产品各自的价格、功能、适用人群都有覆盖，最后给出「谁适合谁」的取舍结论，约八百字。"
+      },
+      "assertions": [
+        {
+          "type": "noFail"
+        },
+        {
+          "type": "file",
+          "match": "comp\\.docx$"
+        },
+        {
+          "type": "chars",
+          "match": "comp\\.docx$",
+          "min": 500
+        },
+        {
+          "type": "verifyClean"
+        },
+        {
+          "type": "maxMs",
+          "ms": 240000
+        }
+      ]
+    },
+    {
+      "id": "no-raw-html",
+      "title": "做页面时结论不许糊拦截页",
+      "smoke": false,
+      "difficulty": "L2",
+      "tags": [
+        "前端",
+        "错误净化"
+      ],
+      "why": "上下文里带着刚生成好的网页代码，会被网关误判成攻击，403 拦截页曾被整页糊进对话气泡。全局断言 no_raw_html 兜这条。",
+      "goal": "做一个单页的产品介绍页，保存成 intro.html，做完只用一句话告诉我文件在哪，不要把代码贴出来",
+      "k": 2,
+      "maxMs": 180000,
+      "rubric": {
+        "ref": "页面有标题、三个以上卖点、一个行动按钮，样式内联可独立打开。"
+      },
+      "assertions": [
+        {
+          "type": "noFail"
+        },
+        {
+          "type": "file",
+          "match": "intro\\.html$"
+        },
+        {
+          "type": "minBytes",
+          "match": "intro\\.html$",
+          "min": 1500
+        },
+        {
+          "type": "maxMs",
+          "ms": 180000
+        }
+      ]
+    },
+    {
+      "id": "image-basic",
+      "title": "生成一张插画",
+      "smoke": false,
+      "difficulty": "L2",
+      "tags": [
+        "多模态",
+        "出图"
+      ],
+      "why": "出图通道大面积 402 时要能走本地插画兜底，不能直接失败。",
+      "goal": "画一张蓝色主题的扁平插画，保存成 cover.png",
+      "k": 2,
+      "maxMs": 150000,
+      "rubric": {
+        "ref": "确实是一张蓝色主题的扁平风格插画，不是纯色块或损坏文件。"
+      },
+      "assertions": [
+        {
+          "type": "noFail"
+        },
+        {
+          "type": "file",
+          "match": "\\.(png|jpe?g|webp)$"
+        },
+        {
+          "type": "minBytes",
+          "match": "\\.(png|jpe?g|webp)$",
+          "min": 8000
+        },
+        {
+          "type": "maxMs",
+          "ms": 150000
+        }
+      ]
+    },
+    {
+      "id": "search-summary",
+      "title": "搜索后给结论",
+      "smoke": false,
+      "difficulty": "L2",
+      "tags": [
+        "联网",
+        "工具调用"
+      ],
+      "why": "联网工具可用性 + 结论非空。断网或抓取失败时这条会红。",
+      "goal": "搜一下最近的人工智能行业新闻，用三句话总结，保存成 news.md",
+      "k": 2,
+      "maxMs": 150000,
+      "rubric": {
+        "ref": "三句话，包含至少一条具体事实（公司、产品、时间或数字），不是「AI 发展迅速」这类空泛判断。"
+      },
+      "assertions": [
+        {
+          "type": "noFail"
+        },
+        {
+          "type": "file",
+          "match": "news\\.md$"
+        },
+        {
+          "type": "chars",
+          "match": "news\\.md$",
+          "min": 40
+        },
+        {
+          "type": "maxMs",
+          "ms": 150000
+        }
+      ]
+    },
+    {
+      "id": "token-budget",
+      "title": "简单任务的 token 预算",
+      "smoke": false,
+      "difficulty": "L1",
+      "tags": [
+        "成本",
+        "上下文"
+      ],
+      "why": "防止上下文悄悄膨胀：同样是写 md，token 不该超过这个量。",
+      "goal": "随便写两句话存成 note.md",
+      "k": 2,
+      "maxMs": 60000,
+      "rubric": {
+        "ref": "两句话，简洁，没有为了凑字数而堆砌。"
+      },
+      "assertions": [
+        {
+          "type": "noFail"
+        },
+        {
+          "type": "file",
+          "match": "note\\.md$"
+        },
+        {
+          "type": "maxTokens",
+          "n": 20000
+        }
+      ]
+    },
+    {
+      "id": "table-math",
+      "title": "表格算术要算对",
+      "smoke": false,
+      "difficulty": "L2",
+      "tags": [
+        "推理",
+        "表格",
+        "算术"
+      ],
+      "why": "模型很容易把表做出来、数字却算错。3 行小计与合计都有唯一正确答案（478.8 + 25 + 88 = 591.8），能机械验证，是少数能把「推理正确性」压成确定性断言的题。",
+      "goal": "做一张配件采购表，保存成 buy.xlsx。三行数据：螺丝 单价 39.9 元 数量 12、垫片 单价 12.5 元 数量 2、扳手 单价 88 元 数量 1。要有小计列，最后一行写合计金额。",
+      "k": 2,
+      "maxMs": 150000,
+      "rubric": {
+        "ref": "三行小计分别为 478.8、25、88，合计 591.8。列头包含项目、单价、数量、小计。"
+      },
+      "assertions": [
+        {
+          "type": "noFail"
+        },
+        {
+          "type": "file",
+          "match": "buy\\.xlsx$"
+        },
+        {
+          "type": "rows",
+          "match": "buy\\.xlsx$",
+          "min": 4
+        },
+        {
+          "type": "contains",
+          "match": "buy\\.xlsx$",
+          "all": [
+            "591.8"
+          ]
+        },
+        {
+          "type": "maxMs",
+          "ms": 150000
+        }
+      ]
+    },
+    {
+      "id": "constraint-follow",
+      "title": "硬约束要守住（字数 + 必含词）",
+      "smoke": false,
+      "difficulty": "L2",
+      "tags": [
+        "指令遵循"
+      ],
+      "why": "模型最容易在这里偷懒：要求不超过 120 字，它写 300 字；要求包含三个词，它漏一个。这条把「听不听话」变成可判定的事实。",
+      "goal": "写一段产品介绍，保存成 brief.md。硬要求：正文不超过 120 字，并且必须同时出现「续航」「重量」「价格」这三个词。",
+      "k": 2,
+      "maxMs": 120000,
+      "rubric": {
+        "ref": "正文控制在 120 字以内，三个必含词都在，读起来像一段完整介绍而不是关键词堆砌。"
+      },
+      "assertions": [
+        {
+          "type": "noFail"
+        },
+        {
+          "type": "file",
+          "match": "brief\\.md$"
+        },
+        {
+          "type": "contains",
+          "match": "brief\\.md$",
+          "all": [
+            "续航",
+            "重量",
+            "价格"
+          ]
+        },
+        {
+          "type": "maxChars",
+          "match": "brief\\.md$",
+          "max": 190
+        },
+        {
+          "type": "maxMs",
+          "ms": 120000
+        }
+      ]
+    },
+    {
+      "id": "revise-followup",
+      "title": "第二轮的改稿要求要覆盖第一轮",
+      "smoke": false,
+      "difficulty": "L3",
+      "tags": [
+        "多轮",
+        "指令更新"
+      ],
+      "why": "多轮里最容易出的事：让压缩到一百字，它新开一个文件；或者把旧内容原样留着。这条同时验「听懂了新要求」和「落在同一个文件上」。",
+      "goal": "写一段三百字左右的产品介绍，保存成 v.md",
+      "then": "太长了，压缩到一百字以内，直接覆盖原来的 v.md",
+      "k": 1,
+      "maxMs": 240000,
+      "rubric": {
+        "ref": "最终 v.md 是压缩后的一百字以内版本，不是三百字原文；内容保留了核心卖点。"
+      },
+      "assertions": [
+        {
+          "type": "noFail"
+        },
+        {
+          "type": "file",
+          "match": "v\\.md$"
+        },
+        {
+          "type": "rounds",
+          "min": 2
+        },
+        {
+          "type": "maxChars",
+          "match": "v\\.md$",
+          "max": 170
+        },
+        {
+          "type": "maxMs",
+          "ms": 240000
+        }
+      ]
+    },
+    {
+      "id": "orchestration-governance",
+      "title": "编排治理：状态机 / 心跳 / 契约硬证据",
+      "smoke": true,
+      "localOnly": true,
+      "difficulty": "L1",
+      "tags": [
+        "自检",
+        "状态机",
+        "契约",
+        "不调模型"
+      ],
+      "why": "技术文档要求的几条硬规矩落在 states.js / contract.js 上：三套状态归一、非法迁移被拒、心跳判活、契约必须带可验收口径、没落盘的产出不许算完成。这题不调模型，直接问这两个模块要答案，几十毫秒跑完；它挂了说明治理层没接上，别的题跑得再漂亮也不算数。",
+      "goal": "",
+      "k": 1,
+      "maxMs": 10000,
+      "rubric": null,
+      "assertions": [
+        {
+          "type": "governance"
+        }
+      ]
+    }
+  ]
+}

@@ -3,116 +3,709 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Boss Agent · 内核 v0.1</title>
-<link rel="stylesheet" href="./app.css">
+<title>Ren Agent</title>
+<link rel="stylesheet" href="./app.css?v=20261104K">
+<link rel="stylesheet" href="./admin.css?v=20261104K">
+<script>
+/* 首帧就定好深浅色：启动屏是第一个可见画面，不能先白后黑闪一下 */
+try { if (localStorage.getItem('boss.theme') === 'dark') document.documentElement.classList.add('dark'); } catch (e) {}
+</script>
 </head>
 <body>
 
-<!-- 登录 -->
-<div class="login" id="login">
-  <div class="login-card">
-    <div class="brand-lg">Boss Agent</div>
-    <p class="login-sub">本机内核 · 输入启动时打印的口令</p>
-    <input id="tokenInput" type="password" placeholder="口令" autocomplete="off">
-    <button class="btn primary w100" id="loginBtn">进入</button>
-    <p class="login-hint" id="loginHint">口令在终端里，形如 <code>口令：xxxxxxxx</code></p>
+<!-- 启动屏：脚本解析完就开始转，云端数据到位、页面渲染完才淡出。
+     不要露出「还没有任务 / 暂无产出」这种空骨架，看着像加载失败。 -->
+<div class="boot" id="boot">
+  <div class="boot-in">
+    <div class="boot-head">
+      <div class="boot-brand">Ren&nbsp;Agent</div>
+    </div>
+    <div class="boot-bar"><i id="bootBar" style="width:8%"></i></div>
+    <div class="boot-meta">
+      <span id="bootText">正在启动…</span>
+      <b id="bootPct">8%</b>
+    </div>
   </div>
+</div>
+
+<!-- 首页 / 登录
+     版式参考主流 AI 产品的落地页：中间一句话 + 一张登录卡，不要一上来就是表单墙。
+     四种进法都在：手机验证码、邮箱验证码、微信扫码、游客体验（WorkBuddy 账号留在最后一行当备选）。
+     新用户送多少积分由后台配置，这里只是显示位，数字登录前从 ba_config 读。 -->
+<div class="land" id="login" hidden>
+  <header class="land-top">
+    <div class="land-logo"><i>✦</i><b>Ren&nbsp;Agent</b></div>
+    <button class="btn tiny" id="landLoginBtn" type="button">登录</button>
+  </header>
+
+  <main class="land-main">
+    <div class="land-mark">✦</div>
+    <h1 class="land-h1">一句话交代清楚<br>剩下交给你的 AI 团队</h1>
+    <p class="land-p">员工去做，每一步都摊开给你看：谁在做、做到哪、花了多少。</p>
+
+    <div class="land-card" id="landCard">
+      <div class="land-card-hd">登录或创建账户</div>
+
+      <div class="land-tabs" id="landTabs" role="tablist">
+        <button class="on" type="button" data-mode="phone" role="tab">手机号</button>
+        <button type="button" data-mode="email" role="tab">邮箱</button>
+      </div>
+
+      <!-- 手机验证码 -->
+      <div class="land-pane" id="panePhone">
+        <div class="land-field">
+          <input id="phoneInput" placeholder="手机号" inputmode="numeric" maxlength="11" autocomplete="tel">
+        </div>
+        <div class="land-field" id="codeRow" hidden>
+          <input id="codeInput" placeholder="短信验证码" inputmode="numeric" maxlength="6" autocomplete="one-time-code">
+        </div>
+        <button class="land-go" id="sendCodeBtn" type="button">继续</button>
+        <button class="land-go" id="verifyBtn" type="button" hidden>登录 / 注册</button>
+        <button class="land-link" id="phoneResend" type="button" hidden>重新获取验证码</button>
+      </div>
+
+      <!-- 邮箱验证码 -->
+      <div class="land-pane" id="paneEmail" hidden>
+        <div class="land-field">
+          <input id="emailInput" placeholder="邮箱地址" type="email" autocomplete="email">
+        </div>
+        <div class="land-field" id="emailCodeRow" hidden>
+          <input id="emailCodeInput" placeholder="邮箱验证码" inputmode="numeric" maxlength="6" autocomplete="one-time-code">
+        </div>
+        <button class="land-go" id="emailSendBtn" type="button">继续</button>
+        <button class="land-go" id="emailVerifyBtn" type="button" hidden>登录 / 注册</button>
+        <button class="land-link" id="emailResend" type="button" hidden>重新获取验证码</button>
+      </div>
+
+      <p class="land-hint" id="loginHint">新用户注册送 <b id="landBonus">500</b> 积分，可直接开一个任务试试。</p>
+
+      <div class="or"><span>或</span></div>
+      <button class="land-alt" id="wxLogin" type="button"><i class="land-wx">微</i>微信扫码登录</button>
+      <button class="land-alt" id="guestBtn" type="button">先不登录，游客体验</button>
+      <button class="land-link" id="wbLogin" type="button">使用 WorkBuddy 账号登录</button>
+    </div>
+
+    <ul class="land-feat">
+      <li><b>不黑箱</b>每一步都写清楚在做什么</li>
+      <li><b>有交付</b>出文档、表格、PPT，不是一段聊天</li>
+      <li><b>算得清</b>花多少积分，明细可查</li>
+    </ul>
+  </main>
+
+  <footer class="land-foot">
+    <span>© 2026 Ren Agent</span>
+    <span class="land-links"><a href="#" onclick="return false">隐私政策</a><a href="#" onclick="return false">服务条款</a></span>
+  </footer>
 </div>
 
 <!-- 主界面 -->
 <div class="app" id="app" hidden>
   <header class="topbar">
-    <div class="brand">Boss&nbsp;Agent <span class="ver">v0.1</span></div>
+    <div class="topbar-brand"><div class="brand"><i class="brand-star" aria-hidden="true">✦</i>Ren&nbsp;Agent</div></div>
+    <nav class="top-nav">
+      <button class="nav-item on" id="workbenchBtn">工作台</button>
+      <button class="nav-item" id="decisionBtn">待我决策</button>
+      <button class="nav-item" id="empTodoBtn">员工待办</button>
+      <button class="nav-item" id="outputBtn">总产出</button>
+      <button class="nav-item" id="visionBtn">愿景和印象</button>
+      <!-- 管理后台：质检台、标准员工、模型接入、Agent 逻辑都收在里面。
+           白名单在服务端 admins.json，前端只拿结果，这里默认 hidden。 -->
+      <button class="nav-item adm-entry" id="adminBtn" hidden>管理后台</button>
+      <button class="nav-item model-item" id="globalModelBtn">
+        全局模型 <span class="model-name" id="modelName">Hy₃</span><span class="tag sm">共用</span>
+      </button>
+    </nav>
     <div class="top-right">
-      <span class="model-pill" id="modelPill">离线 Mock</span>
-      <div class="perm-group" id="permGroup">
-        <button class="perm" data-cat="read">读文件</button>
-        <button class="perm" data-cat="write">写文件</button>
-        <button class="perm" data-cat="exec">跑命令</button>
-      </div>
-      <button class="btn ghost" id="settingsBtn">模型设置</button>
+      <!-- 点余额看明细：余额、赠送/充值分桶、逐笔消耗 -->
+      <button class="credits" id="creditsBox" type="button" title="查看积分明细">
+        <span>积分</span><b id="creditNum">—</b>
+      </button>
+      <button class="btn tiny recharge" id="rechargeBtn">充值</button>
+      <button class="cr-avatar" id="crAvatar" title="点击打开菜单">Cr</button>
     </div>
   </header>
 
+  <div class="banner" id="banner" hidden>
+    <span class="grow" id="bannerText"></span>
+    <button class="btn tiny" id="bannerBtn">登录</button>
+  </div>
+
   <div class="layout">
     <aside class="rail">
-      <div class="rail-head">
-        <span>任务池</span>
-        <button class="btn tiny" id="newTaskBtn">+ 新建</button>
+      <div class="rail-tabs" id="railTabs">
+        <button class="rtab on" data-view="task">任务</button>
+        <button class="rtab" data-view="project">项目</button>
+        <button class="rtab" data-view="staff">员工</button>
       </div>
-      <div class="task-list" id="taskList"></div>
+      <div class="rail-search">
+        <span class="rs-ic">⌕</span>
+        <input id="railSearch" placeholder="搜索任务" autocomplete="off">
+        <button class="rs-x" id="railSearchX" type="button" title="清除" hidden>×</button>
+      </div>
+      <div class="rail-head">
+        <span id="railHint">任务</span>
+        <button class="btn tiny action" id="railActionBtn">＋ 新建任务</button>
+      </div>
+      <div class="task-list" id="railList"></div>
     </aside>
 
-    <main class="main">
+    <!-- 左栏拉手：按住鼠标左右拖动改左栏宽度，双击回默认宽 -->
+    <div class="splitter left" id="splitL" role="separator" aria-orientation="vertical" tabindex="0"
+         aria-label="拖动调整左栏宽度" title="拖动调整宽度 · 双击恢复默认"></div>
+
+    <main class="main" id="taskView">
       <header class="task-head">
         <div class="th-left">
-          <h1 id="taskTitle">还没有任务</h1>
-          <div class="th-meta" id="taskMeta">在下面交代第一件事，或者点左上角「+ 新建」</div>
+          <div class="th-title-row">
+            <h1 id="taskTitle">还没有任务</h1>
+            <div class="th-search">
+              <span class="ts-ic">⌕</span>
+              <input id="taskSearch" placeholder="搜索本任务内容" autocomplete="off">
+              <button class="ts-x" id="taskSearchX" type="button" title="清除搜索" hidden>×</button>
+            </div>
+            <span class="search-meta" id="taskSearchMeta"></span>
+          </div>
+          <div class="th-meta" id="taskMeta">在下面交代第一件事，或者点左上角「＋ 新建任务」</div>
           <div id="dvBox"></div>
         </div>
         <div class="th-right" id="taskStats"></div>
       </header>
 
       <div class="trace" id="trace">
-        <div class="empty" id="emptyState">
+        <div class="empty">
           <div class="empty-t">这里会显示每一步</div>
           <div class="empty-d">员工调用了哪个工具、参数是什么、返回了什么、花了多久——都摊开给你看，不藏在对话里。</div>
         </div>
       </div>
 
       <div class="composer">
-        <div class="composer-row">
-          <span class="who" id="whoLabel">交给 周砚</span>
-          <textarea id="goal" rows="1" placeholder="交代一件事。例如：看看工作目录里有什么，把结构说明写进 notes.md"></textarea>
-          <button class="btn primary" id="runBtn">执行</button>
+        <div class="att-list" id="attList" hidden></div>
+        <div class="cmp-box">
+          <textarea id="goal" rows="1" placeholder="交代一件事。例如：把报价表折算排序，结论写进 报价结论.md"></textarea>
+          <div class="cmp-bar">
+            <div class="cmp-l">
+              <button class="att-btn" id="attBtn" type="button" title="加附件：文档 / 图片 / 截图（单个 ≤ 20MB）。也可以直接粘贴截图或拖进来">＋</button>
+              <div class="perm-sel" id="permSel" title="点击设置权限">
+                <span class="perm-ic">!</span>
+                <span class="perm-sel-val" id="permLabel">允许完全访问</span>
+                <i class="perm-sel-arr">⌄</i>
+              </div>
+            </div>
+            <div class="cmp-r">
+              <div class="emp-chip" id="empSel" title="点一下换员工">
+                <span class="emp-chip-nm" id="whoLabel">周砚</span>
+                <span class="emp-chip-rl" id="whoRole">秘书</span>
+                <i class="emp-chip-arr">⌃</i>
+              </div>
+              <button class="mic-btn" id="micTask" type="button" aria-pressed="false" title="语音输入：点一下开始说话，自动转成文字（右键切换中/英）">
+                <svg class="mic-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect class="mic-cap" x="9" y="2.6" width="6" height="11.2" rx="3"></rect>
+                  <path d="M5.6 11.4a6.4 6.4 0 0 0 12.8 0"></path>
+                  <path d="M12 17.8v3.2"></path>
+                </svg>
+                <span class="mic-lang" title="切换识别语言">中</span>
+              </button>
+              <button class="send-btn" id="runBtn" type="button" title="执行（Enter）">↑</button>
+            </div>
+          </div>
         </div>
-        <div class="composer-hint">⌘ + Enter 执行 · 路径都相对工作目录 · 红线的活只出方案不动手</div>
+        <input type="file" id="attFile" multiple hidden
+               accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.tsv,.txt,.md,.png,.jpg,.jpeg,.webp,.gif,.bmp">
+        <!-- 老版本的「交付物」手填行已下线：交付物现在由员工跑完后自动核对（见任务头的校验结果） -->
+        <input type="hidden" id="deliverables" value="">
       </div>
     </main>
 
+    <main class="main meeting" id="meetingView" hidden>
+      <header class="task-head">
+        <div class="th-left">
+          <div class="th-title-row">
+            <h1 id="mtTitle">还没有项目</h1>
+            <div class="th-search">
+              <span class="ts-ic">⌕</span>
+              <input id="meetSearch" placeholder="搜索本项目内容" autocomplete="off">
+              <button class="ts-x" id="meetSearchX" type="button" title="清除搜索" hidden>×</button>
+            </div>
+            <span class="search-meta" id="meetSearchMeta"></span>
+          </div>
+          <div class="th-meta" id="mtMeta">点左上角「＋ 新建项目」，秘书会先拆题，再拉对口的同事。</div>
+          <div class="mt-people" id="mtPeople"></div>
+        </div>
+        <div class="th-right" id="mtStats"></div>
+      </header>
+
+      <div class="trace meet" id="meetBody">
+        <div class="empty">
+          <div class="empty-t">还没有项目</div>
+          <div class="empty-d">新建一个项目后：秘书先把你的主题拆成几个要你拍板的问题，你确认后再拉对口同事，按方法论分别拆方案、成本、风险、法务等要素，最后出一份项目纪要。</div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <div class="mn-pop" id="mnPop" hidden></div>
+        <div class="att-list" id="attListM" hidden></div>
+        <div class="cmp-box">
+          <textarea id="meetInput" rows="1" placeholder="点上面的选项，或者在这里直接说你的答案 / 纠正。"></textarea>
+          <div class="cmp-bar">
+            <div class="cmp-l">
+              <button class="att-btn" id="attBtnM" type="button" title="给这个项目加附件：文档 / 图片 / 截图（单个 ≤ 20MB）">＋</button>
+              <div class="perm-sel" id="permSelM" title="点击设置权限">
+                <span class="perm-ic">!</span>
+                <span class="perm-sel-val" id="permLabelM">允许完全访问</span>
+                <i class="perm-sel-arr">⌄</i>
+              </div>
+            </div>
+            <div class="cmp-r">
+              <span class="emp-chip" id="meetWho" title="点一下选由谁接这句话">秘书 周砚<i class="emp-chip-arr">⌃</i></span>
+              <button class="mic-btn" id="micMeet" type="button" aria-pressed="false" title="语音输入：点一下开始说话，自动转成文字（右键切换中/英）">
+                <svg class="mic-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect class="mic-cap" x="9" y="2.6" width="6" height="11.2" rx="3"></rect>
+                  <path d="M5.6 11.4a6.4 6.4 0 0 0 12.8 0"></path>
+                  <path d="M12 17.8v3.2"></path>
+                </svg>
+                <span class="mic-lang" title="切换识别语言">中</span>
+              </button>
+              <button class="send-btn" id="meetSend" type="button" title="发送（Enter）">↑</button>
+            </div>
+          </div>
+        </div>
+        <input type="file" id="attFileM" multiple hidden
+               accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.tsv,.txt,.md,.png,.jpg,.jpeg,.webp,.gif,.bmp">
+        <div class="composer-sub">
+          <button class="btn" id="meetProceed" hidden>确认，开始拆解</button>
+        </div>
+      </div>
+    </main>
+
+    <main class="main" id="todoView" hidden>
+      <header class="task-head">
+        <div class="th-left">
+          <div class="th-title-row">
+            <h1>待办</h1>
+            <div class="th-search">
+              <span class="ts-ic">⌕</span>
+              <input id="todoSearch" placeholder="搜索待办内容 / 负责人" autocomplete="off">
+              <button class="ts-x" id="todoSearchX" type="button" title="清除搜索" hidden>×</button>
+            </div>
+            <span class="search-meta" id="todoSearchMeta"></span>
+          </div>
+          <div class="th-meta" id="tdMeta">项目和任务产生的待办都在这里，按产生时间倒序。</div>
+        </div>
+        <div class="th-right">
+          <button class="void-btn" id="tdVoidAll" type="button" title="把还没完成的待办一次性置为失效：仍留在列表里（灰色），但不能勾选、关联项目、派活">全部失效</button>
+          <div class="td-stats" id="tdStats"></div>
+        </div>
+      </header>
+      <div class="trace td-trace" id="tdList"></div>
+    </main>
+
+    <!-- 待我决策：把工作台里还没答的拍板卡原样汇总过来，按任务 / 项目分开看 -->
+    <main class="main" id="decisionView" hidden>
+      <header class="task-head">
+        <div class="th-left">
+          <div class="th-title-row">
+            <h1>待我决策</h1>
+            <div class="th-search">
+              <span class="ts-ic">⌕</span>
+              <input id="decisionSearch" placeholder="搜索要你拍板的事" autocomplete="off">
+              <button class="ts-x" id="decisionSearchX" type="button" title="清除搜索" hidden>×</button>
+            </div>
+            <span class="search-meta" id="decisionSearchMeta"></span>
+          </div>
+          <div class="th-meta" id="decMeta">任务、项目里员工问完在等你拍板的事，统一汇总到这里。</div>
+          <div class="dec-tabs" id="decTabs"></div>
+        </div>
+        <div class="th-right" id="decStats"></div>
+      </header>
+      <div class="trace td-trace dec-trace" id="decisionList"></div>
+    </main>
+
+    <!-- 员工待办 -->
+    <main class="main" id="empTodoView" hidden>
+      <header class="task-head">
+        <div class="th-left">
+          <h1>员工待办</h1>
+          <div class="th-meta">任务和项目产生的所有待办，集中在这里，看谁卡在哪、需要什么支持。</div>
+        </div>
+      </header>
+      <div class="trace td-trace" id="empTodoList">
+        <div class="empty"><div class="empty-t">暂无员工待办</div><div class="empty-d">任务和项目里员工标记的待办会集中到这里，可按员工下指令继续执行。具体交互等需求明确后开发。</div></div>
+      </div>
+    </main>
+
+    <!-- 总产出 -->
+    <main class="main" id="outputView" hidden>
+      <header class="task-head">
+        <div class="th-left">
+          <div class="th-title-row">
+            <h1>总产出</h1>
+            <div class="th-search">
+              <span class="ts-ic">⌕</span>
+              <input id="outputSearch" placeholder="搜产出物名称 / 员工 / 简介" autocomplete="off">
+              <button class="ts-x" id="outputSearchX" type="button" title="清除搜索" hidden>×</button>
+            </div>
+            <span class="search-meta" id="outputSearchMeta"></span>
+          </div>
+          <div class="th-meta" id="outViewMeta">所有任务、项目、员工的产出物，按类型 / 名称 / 时间汇总。</div>
+        </div>
+      </header>
+      <div class="trace td-trace out-trace" id="outputList">
+        <div class="empty"><div class="empty-t">暂无产出</div><div class="empty-d">任务和项目跑完生成的产出物会汇总到这里，可查看、下载、看源码。</div></div>
+      </div>
+    </main>
+
+    <!-- 员工详情：在中间面板里看 / 改，不再弹窗 -->
+    <main class="main" id="staffView" hidden>
+      <header class="task-head">
+        <div class="th-left">
+          <div class="th-title-row">
+            <h1 id="stfTitle">员工</h1>
+            <span class="stf-tags" id="stfTags"></span>
+          </div>
+          <div class="th-meta" id="stfMeta"></div>
+        </div>
+        <div class="th-right">
+          <button class="btn tiny ghost" id="stfBack" type="button">← 回到任务</button>
+        </div>
+      </header>
+      <div class="trace td-trace stf-body" id="stfBody"></div>
+    </main>
+
+    <!-- 愿景和印象 -->
+    <main class="main" id="visionView" hidden>
+      <header class="task-head">
+        <div class="th-left">
+          <div class="th-title-row"><h1>愿景和印象</h1></div>
+          <div class="th-meta">上面写给全体员工，是你和公司的长期方向；下面这栏是员工对你的印象，只读，用来帮你把话说得更有效。</div>
+        </div>
+      </header>
+      <div class="trace td-trace vs-body">
+
+        <section class="vs-sec">
+          <div class="vs-hd">
+            <div class="vs-hd-t">
+              <b>公司和我的愿景</b>
+              <span class="vs-sub">写给全体员工的长期方向。员工每次开工会读到它，按这个方向做事。可随时增、删、改。</span>
+            </div>
+            <button class="btn tiny primary" id="vsAdd" type="button">＋ 新增一条</button>
+          </div>
+          <div class="vs-list" id="vsList"></div>
+          <div class="vs-tip">写具体的、能当判断依据的话，比写口号有用。例：<i>「做普通人用得起的 AI 工具；能用文档说清的事不开会。」</i></div>
+        </section>
+
+        <section class="vs-sec">
+          <div class="vs-hd">
+            <div class="vs-hd-t">
+              <b>全体员工对我的印象</b>
+              <span class="vs-sub">员工按 MBTI 与行为分析，从过往沟通记录里看你怎么说话、怎么决策。只读，不能改；最多 50 条，新的上来、旧的收起。</span>
+            </div>
+            <button class="btn tiny" id="vsScan" type="button">让员工重新看看我</button>
+          </div>
+          <div class="vs-scan" id="vsScanMeta" hidden></div>
+          <div class="vs-list vs-imp" id="vsImpList"></div>
+        </section>
+
+      </div>
+    </main>
+
+    <!-- 右侧产物区拉手：拖动改产物区宽度，双击回默认宽 -->
+    <div class="splitter right" id="splitR" role="separator" aria-orientation="vertical" tabindex="0"
+         aria-label="拖动调整产出物区宽度" title="拖动调整宽度 · 双击恢复默认"></div>
+
     <aside class="rail right">
       <div class="rail-head">
-        <span>员工</span>
-        <button class="btn tiny" id="newEmpBtn">+ 新建</button>
+        <span id="outHead">产出物</span>
       </div>
-      <div class="emp-list" id="empList"></div>
-      <div class="rail-foot"><span id="wsLabel"></span></div>
+      <div class="outdir-bar" id="outDirBar" hidden></div>
+      <div class="out-search">
+        <span class="ts-ic">⌕</span>
+        <input id="outSearch" placeholder="搜产出物 / 文件名" autocomplete="off">
+        <button class="ts-x" id="outSearchX" type="button" title="清除搜索" hidden>×</button>
+      </div>
+      <div class="task-list" id="outList"></div>
+      <div class="rail-foot"><span id="wsLabel">工作区</span></div>
     </aside>
   </div>
 </div>
 
-<!-- 新建员工 -->
+<!-- 管理后台：全屏覆盖层。
+     进入条件只有一条——/api/is-admin 返回 admin；白名单在服务端 admins.json，前端不改名单。
+     四个页：模型接入（当前走 WorkBuddy 托管通道，Key 位占位待启用）、标准员工（公共员工库 + 记忆）、
+     Agent 逻辑（任务/项目节点图，参数读实时设置）、质检平台（从主界面搬进来的评测台）。 -->
+<div class="adm" id="adminApp" hidden>
+  <aside class="adm-side">
+    <div class="adm-brand"><b>Ren&nbsp;Agent</b><span>管理后台</span></div>
+    <nav class="adm-nav" id="admNav">
+      <button class="adm-nav-i" type="button" data-page="models"><i>◈</i><span>模型接入<em>通道 · Key</em></span></button>
+      <button class="adm-nav-i" type="button" data-page="staff"><i>◉</i><span>标准员工<em>公共员工库</em></span></button>
+      <button class="adm-nav-i" type="button" data-page="flow"><i>⌗</i><span>Agent 逻辑<em>任务 / 项目流程</em></span></button>
+      <button class="adm-nav-i" type="button" data-page="points"><i>◐</i><span>积分与充值<em>赠送 / 汇率 / 审单</em></span></button>
+      <button class="adm-nav-i" type="button" data-page="qa"><i>◎</i><span>质检平台<em>评测与回归</em></span></button>
+    </nav>
+    <div class="adm-side-foot">
+      <button class="btn tiny ghost w100" id="admExit" type="button">← 返回工作台</button>
+    </div>
+  </aside>
+  <div class="adm-main">
+    <header class="adm-head">
+      <div class="adm-head-l">
+        <h1 id="admTitle">标准员工</h1>
+        <p id="admSub"></p>
+      </div>
+      <div class="adm-head-r">
+        <!-- 后台是全屏层，进来容易出去难：返回按钮必须常驻在顶栏，不跟着各页的按钮区被覆盖 -->
+        <button class="btn tiny adm-back" id="admBack" type="button" title="回到用户端工作台">← 返回用户端</button>
+        <div class="adm-acts" id="admActions"></div>
+      </div>
+    </header>
+    <div class="adm-body" id="admBody"></div>
+        <!-- 评测台：配对跑 + 指标对比 + 显著性 + 差异日志。改完 agent 逻辑到这里跑一遍，就知道前后差多少 -->
+        <main class="main" id="evalView" hidden>
+          <header class="task-head">
+            <div class="th-left">
+              <div class="th-title-row">
+                <h1>评测台</h1>
+                <span class="ev-tag big">A/B · 配对</span>
+              </div>
+              <div class="th-meta" id="evMeta">正在加载题库…</div>
+            </div>
+            <div class="th-right">
+              <select id="evBase" class="ev-k" title="和哪一次运行做对比"></select>
+              <select id="evK" class="ev-k" title="每题跑几次；全部通过才算过（Pass^k）">
+                <option value="1">每题 1 次</option>
+                <option value="2">每题 2 次</option>
+                <option value="3">每题 3 次</option>
+              </select>
+              <button class="btn" id="evSmoke" type="button">跑冒烟</button>
+              <button class="btn primary" id="evAll" type="button">全部跑一遍</button>
+            </div>
+          </header>
+          <div class="trace td-trace ev-body">
+            <div class="ev-var">
+              <div class="ev-var-grp">
+                <span class="ev-var-l">A 基线</span>
+                <select id="evVarA" class="ev-k"></select>
+              </div>
+              <div class="ev-var-grp">
+                <span class="ev-var-l">B 候选</span>
+                <select id="evVarB" class="ev-k"></select>
+              </div>
+              <button class="btn" id="evAB" type="button">A/B 配对跑</button>
+              <span class="ev-var-hint">配对跑：同一批冒烟题、两个模型逐题交替（ABBA），抵消时间漂移与位置偏差</span>
+            </div>
+            <div class="ev-prog" id="evProg" hidden></div>
+            <div id="evCompare"></div>
+            <div id="evPairs"></div>
+            <div id="evList" class="ev-list"></div>
+            <div id="evLogs"></div>
+            <div class="ev-foot">
+              判定口径：一条题按顺序过所有断言，第一个不过就停 —— 后面再多的错都是它的连锁反应。
+              通过率按 Pass^k 报（k 次全过才算过）；质量分按 Rubric 四档加权，命中幻觉直接归零；
+              显著性用配对检验（二值 McNemar / 连续量 paired bootstrap）。分差在噪声内或护栏被突破时，不要据此切换。
+            </div>
+          </div>
+        </main>
+  </div>
+</div>
+
+<!-- 标准员工库：管理后台训练好的员工，所有账号都能取一份 -->
+<div class="mask" id="stdLibMask" hidden>
+  <div class="modal wide stdlib-modal">
+    <div class="ov-head">
+      <div class="ov-hl" style="display:flex;align-items:center;gap:8px">
+        <h3>标准员工库</h3>
+        <span class="ot-badge" id="stdLibN">0 位</span>
+      </div>
+      <button class="btn ghost tiny" id="stdLibClose" data-close type="button">关闭</button>
+    </div>
+    <p class="sub">取用会复制一份到你名下，岗位和性格你可以再改。<b>记忆不用复制</b>——它按出处实时读取，后台补充的新经验，下次开口就吃到。</p>
+    <div class="stdlib-list" id="stdLibList"></div>
+  </div>
+</div>
+
+<!-- 关联项目 -->
+<div class="mask" id="linkModal" hidden>
+  <div class="modal">
+    <h3>这条待办还跟哪些项目有关</h3>
+    <p class="sub">可以选多个。选中的项目会以标签形式挂在待办上，点标签能直接跳到那个项目。</p>
+    <div class="lk-list" id="lkList"></div>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close>取消</button>
+      <button class="btn primary" id="lkSave">确定</button>
+    </div>
+  </div>
+</div>
+
 <div class="mask" id="empModal" hidden>
   <div class="modal">
-    <h3>新建员工</h3>
-    <p class="sub">员工 = 岗位 + 人设 + 一个可随时替换的模型基座。</p>
-    <label class="f">名字<input id="empName" placeholder="例如：周砚"></label>
-    <label class="f">岗位<input id="empRole" placeholder="例如：法务 / 财务 / 研究"></label>
-    <label class="f">说话风格
-      <div class="persona-grid" id="personaGrid"></div>
+    <h3 id="empModalTitle">新建员工</h3>
+    <p class="sub">员工 = 岗位 + 人设 + 一个可随时替换的模型。人设只改说话口气，不改判断。</p>
+    <label class="f">岗位
+      <div class="combo">
+        <div class="combo-field">
+          <input id="empRole" placeholder="输入汉字搜索，或点右侧 ▾ 选" autocomplete="off" spellcheck="false">
+          <button type="button" class="combo-btn" id="roleDrop" aria-label="展开岗位">▾</button>
+        </div>
+        <div class="combo-list" id="roleList" hidden></div>
+      </div>
     </label>
-    <label class="f">交给它的额外说明（可空）
-      <textarea id="empNotes" rows="2" placeholder="例如：我们的合同都用我方模板；报价必须含税"></textarea>
+    <label class="f">名字（选填，不填就用岗位名）<input id="empName" placeholder="例如：周砚"></label>
+    <div class="f">性格与说话风格（四个都选填）
+      <div class="tr-box" id="traitBox"></div>
+      <p class="tr-note">填了哪几项，TA 就按哪几项调语气和做事方式：先看什么、先问什么都会跟着变。一项都不填，就用默认的稳重口径。</p>
+    </div>
+    <label class="f">期望员工具备的能力
+      <textarea id="empNotes" rows="2" placeholder="例如：能独立做三年现金流测算；看得懂合同里的违约金上限；报价必须含税"></textarea>
     </label>
+    <div class="f kb-box">
+      <div class="kb-hd">
+        <span>知识库（RAG）</span>
+        <div class="kb-btns">
+          <button type="button" class="btn tiny" id="kbImportBtn">＋ 导入知识库</button>
+          <button type="button" class="btn tiny ghost" id="kbViewBtn">查看知识库 <i id="kbCount">0</i></button>
+        </div>
+      </div>
+      <div class="kb-note">这位员工专属。内容只存在你的账号下、只喂给它，平台不会获取、不会用于训练、不会共享。</div>
+    </div>
+    <label class="chk"><input type="checkbox" id="empCore" checked> 核心员工（新建项目时默认拉进来）</label>
     <div class="modal-foot">
+      <button class="btn ghost danger" id="empDelete" hidden>删除这个员工</button>
       <button class="btn ghost" data-close>取消</button>
       <button class="btn primary" id="empSave">让它上岗</button>
     </div>
   </div>
 </div>
 
-<!-- 模型设置 -->
+<!-- 员工知识库 -->
+<div class="mask" id="kbModal" hidden>
+  <div class="modal wide">
+    <h3 id="kbTitle">知识库</h3>
+    <p class="sub" id="kbFor">这位员工的专属知识库。</p>
+    <div class="kb-tabs" id="kbTabs">
+      <button type="button" class="kbt on" data-t="import">导入</button>
+      <button type="button" class="kbt" data-t="list">已导入 <i id="kbN2">0</i></button>
+    </div>
+
+    <div id="kbPaneImport">
+      <div class="kb-privacy">
+        导入的内容只在你的账号下、只用于你创建的这位员工。平台不会获取该内容，也不会用于训练或共享给其他人。
+      </div>
+      <label class="f">资料标题（选填）<input id="kbName" placeholder="例如：2026 报价口径与折扣阶梯"></label>
+      <label class="f">内容
+        <textarea id="kbText" rows="7" placeholder="把制度、口径、历史报价、FAQ、合同范本贴进来。段落之间空一行，检索时按段命中。"></textarea>
+      </label>
+      <div class="kb-file">
+        <input type="file" id="kbFile" accept=".txt,.md,.csv,.json,.log" hidden>
+        <button type="button" class="btn tiny" id="kbFileBtn">选一个文件（.txt / .md / .csv）</button>
+        <span class="kb-fhint" id="kbFileHint">也可以直接把上面的框填满</span>
+      </div>
+      <div class="modal-foot">
+        <button class="btn ghost" data-close>取消</button>
+        <button class="btn primary" id="kbSave">导入到这位员工</button>
+      </div>
+    </div>
+
+    <div id="kbPaneList" hidden>
+      <div class="kb-list" id="kbList"></div>
+      <div class="modal-foot">
+        <button class="btn ghost" data-close>关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- 新建项目 / 任务转项目：同一个弹框，字段完全一致 -->
+<div class="mask" id="mtModal" hidden>
+  <div class="modal">
+    <h3 id="mtTitle">新建项目</h3>
+    <p class="sub" id="mtSub">先给一句主题；再定项目经理、牵头人和成员。牵头人把目标拆成子任务分给对口的同事施工，项目经理盯推进。</p>
+    <label class="f">项目主题
+      <textarea id="mtTopic" rows="3" placeholder="例如：要不要研发一款家用管家机器人，能监测家人健康指标并收纳小物件"></textarea>
+    </label>
+    <div class="tp-role">
+      <div class="tp-role-h"><b>项目经理</b><span class="qm" data-tip="项目经理负责项目的推进和管理：盯进度、协调资源、对老板汇报。">?</span></div>
+      <select id="mtPM" class="tp-sel"></select>
+    </div>
+    <div class="tp-role">
+      <div class="tp-role-h"><b>项目牵头人</b><span class="qm" data-tip="项目牵头人负责项目的拆解和分工以及汇总整理：把目标拆成子任务、分派给对口的成员、最后汇总成结论。">?</span></div>
+      <select id="mtChief" class="tp-sel"></select>
+    </div>
+    <div class="f" title="项目经理和牵头人自动在成员里（取消不掉）。核心员工排在前面；其余按名字首字母 A→Z。">
+      项目成员
+      <div class="mt-pick-head">
+        <span id="mtPickNote">已选 0 人</span>
+        <button class="btn tiny ghost" id="mtPickCore">只选核心</button>
+        <button class="btn tiny ghost" id="mtPickAll">全选</button>
+      </div>
+      <div class="pick-grid" id="mtPickGrid"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close>取消</button>
+      <button class="btn primary" id="mtCreate">成立项目</button>
+    </div>
+  </div>
+</div>
+
+<!-- 设置 -->
 <div class="mask" id="setModal" hidden>
   <div class="modal">
-    <h3>模型基座</h3>
-    <p class="sub">业务代码只说 OpenAI 协议，换一家只改这里。Key 只存在本机 data/config.json。</p>
-    <label class="f">选择服务商
-      <select id="presetSel"></select>
-    </label>
-    <label class="f">baseURL<input id="baseURL" placeholder="https://api.deepseek.com/v1"></label>
-    <label class="f">API Key<input id="apiKey" type="password" placeholder="sk-…"></label>
-    <label class="f">模型名<input id="modelName" placeholder="deepseek-chat"></label>
-    <label class="f">单任务最多几步<input id="maxSteps" type="number" min="1" max="24" value="12"></label>
+    <h3>模型与执行</h3>
+    <p class="sub">模型走云端通道，不需要填任何 Key。换模型不换员工。</p>
+    <div class="set-body">
+      <label class="f">模型
+        <select id="modelSel"></select>
+      </label>
+      <p class="model-note" id="modelNote"></p>
+      <h3 class="set-h">任务：几步、多少 token</h3>
+      <div class="lim-grid">
+        <label class="f">最多走几步<input id="maxSteps" type="number" min="1" max="40" step="1" value="24"></label>
+        <label class="f">token 上限<input id="maxTokens" type="number" min="1000" step="10000" value="200000"></label>
+      </div>
+      <p class="lim-note" id="limTaskNote">一步 = 一次工具调用（读文件、写文件、跑命令都算）。按「读 → 做 → 验」估：简单交付 8–12 步，带改稿留 20 步以上。token 按累计输入 + 输出算，到线就停。</p>
+
+      <h3 class="set-h">项目：每节几步、整场多少 token</h3>
+      <div class="lim-grid">
+        <label class="f">每节最多几步<input id="maxProjSteps" type="number" min="2" max="30" step="1" value="6"></label>
+        <label class="f">项目 token 上限<input id="maxProjTokens" type="number" min="20000" step="50000" value="600000"></label>
+      </div>
+      <p class="lim-note" id="limProjNote">「一节」= 项目里一位同事负责的一段活。出 PPT 的那一节会自动多给 5 步（搜图 + 修一轮）。token 上限是整个项目累计，到线会停下来等你决定加不加。</p>
+
+      <h3 class="set-h">执行方式</h3>
+      <label class="chk"><input type="checkbox" id="approveOps"> 敏感操作先问一下（写文件 / 跑命令前挂起等我放行）</label>
+      <label class="chk"><input type="checkbox" id="autoResume"> 刷新或重开页面后，自动接着跑上次没做完的任务</label>
+      <label class="chk"><input type="checkbox" id="verifyOn"> 收工时由另一个模型独立验收（不过就退回重做一次，多花一次调用）</label>
+
+      <h3 class="set-h">产出存在哪</h3>
+      <p class="sub">对话和任务记录存云端；产出文件（图片、文档、PPT、表格）默认直接写进你选的本机文件夹，不占云存储。换个浏览器或换台机器要重新选一次。</p>
+      <div class="set-row">
+        <span class="set-row-t" id="outDirName">未选择文件夹</span>
+        <button class="btn tiny" id="outDirPickSet">选择文件夹</button>
+        <button class="btn tiny ghost" id="outDirClear">断开</button>
+      </div>
+      <label class="chk"><input type="checkbox" id="cloudBackup"> 没选文件夹时，把 ≤2MB 的小产出暂存云端（会占云存储额度）</label>
+
+      <h3 class="set-h">自定义工具（HTTP）</h3>
+      <p class="sub">把内部接口注册成工具，员工可以直接调。地址里的 {参数名} 会替换成实际值。</p>
+      <div id="ctList"></div>
+      <div class="ct-form">
+        <input id="ctName" placeholder="工具名（英文，如 get_price）">
+        <input id="ctDesc" placeholder="一句话说明（模型看这个决定何时调）">
+        <input id="ctUrl" placeholder="接口地址，如 https://x.com/api?p={query}">
+        <input id="ctParams" placeholder='参数 Schema JSON，如 {"type":"object","properties":{"query":{"type":"string"}}}'>
+        <button class="btn" id="ctAdd">添加工具</button>
+      </div>
+
+      <h3 class="set-h">例行任务</h3>
+      <p class="sub">到点自动交代给当前选中的员工。应用开着会准时跑；关着则下次打开时补跑。</p>
+      <div id="cronList"></div>
+      <div class="ct-form">
+        <input id="cronGoal" placeholder="要交代的事，如 昨日询盘汇总成日报.md">
+        <select id="cronFreq"><option value="daily">每天</option><option value="hourly">每 6 小时</option></select>
+        <input id="cronAt" placeholder="每天几点" value="09:00">
+        <button class="btn" id="cronAdd">添加任务</button>
+      </div>
+    </div>
     <div class="modal-foot">
       <button class="btn ghost" data-close>取消</button>
       <button class="btn primary" id="setSave">保存</button>
@@ -120,7 +713,266 @@
   </div>
 </div>
 
+<!-- 产出 -->
+<div class="mask" id="filesModal" hidden>
+  <div class="modal wide">
+    <div class="fm-head">
+      <h3>产出</h3>
+      <div class="tabs" id="fmTabs">
+        <button class="tab on" data-tab="cloud">云端存档</button>
+        <button class="tab" data-tab="local">工作区</button>
+      </div>
+      <span class="fm-path" id="fmPath">/</span>
+    </div>
+    <p class="sub" id="fmTip">任务跑完会自动把写出来的文件存到云端，换设备也能拿回来。</p>
+    <div class="fm-body">
+      <div class="fm-list" id="fmList"></div>
+      <div class="fm-view"><pre id="fmText">← 选一个文件</pre></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" id="fmDownload" hidden>下载</button>
+      <button class="btn ghost" data-close>关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 记忆 -->
+<div class="mask" id="memModal" hidden>
+  <div class="modal wide">
+    <div class="fm-head">
+      <h3>记忆</h3>
+      <div class="tabs" id="memTabs">
+        <button class="tab on" data-mt="company">公司档案</button>
+        <button class="tab" data-mt="staff">员工记忆</button>
+        <button class="tab" data-mt="project">项目记忆</button>
+      </div>
+      <span class="fm-path" id="memPath">—</span>
+    </div>
+    <p class="sub" id="memTip">员工只记「确认过的事实」，不记过程，也不记失败的那一版。新说法推翻旧说法时，旧的那条会自动标成「已被取代」并留档，不再参与判断。</p>
+
+    <!-- 类型 / 状态筛选：记忆多了以后按类型看，作废的默认归到「已作废」里 -->
+    <div class="mem-flt" id="memFlt">
+      <div class="mem-chips" id="memTypeFlt">
+        <button class="mem-chip on" type="button" data-ft="">全部</button>
+        <button class="mem-chip" type="button" data-ft="fact">事实</button>
+        <button class="mem-chip" type="button" data-ft="pref">偏好</button>
+        <button class="mem-chip" type="button" data-ft="decision">决策</button>
+        <button class="mem-chip" type="button" data-ft="policy">口径</button>
+        <button class="mem-chip" type="button" data-ft="risk">禁区</button>
+      </div>
+      <div class="mem-chips" id="memStateFlt">
+        <button class="mem-chip on" type="button" data-fs="all">全部</button>
+        <button class="mem-chip" type="button" data-fs="active">只看有效</button>
+        <button class="mem-chip" type="button" data-fs="cand">待采纳</button>
+        <button class="mem-chip" type="button" data-fs="off">已作废</button>
+      </div>
+    </div>
+
+    <div id="memPaneCompany">
+      <div class="mem-note">
+        这段文字会在每次任务开始前喂给员工。第一段随便写（公司是干什么的、口径、禁区）；
+        每行 <code>- [日期] 一条事实</code> 是单独一条记忆，可以按相关性被召回，也可以在下面逐条停用或纠正。
+      </div>
+      <textarea id="memText" class="mem-ta" rows="10" spellcheck="false"
+                placeholder="例：&#10;本公司做家用小家电，主销国内，客单价 199–899 元。&#10;&#10;- [2026-10-30] 报价一律含税含运费，口头不算。&#10;- [2026-10-30] 五层瓦楞纸板市场价约 3.4 元/㎡（来源：1688 询价）"></textarea>
+      <div class="mem-bar">
+        <span class="mem-count" id="memCount">0 条条目</span>
+        <button class="btn primary" id="memSaveCompany">保存档案</button>
+      </div>
+      <div class="mem-head">
+        <span id="memCoHead">可召回的条目</span>
+        <span class="mem-hint">按类型筛 · 点来源可跳回那次任务</span>
+      </div>
+      <div class="mem-list" id="memCoList"></div>
+    </div>
+
+    <div id="memPaneStaff" hidden>
+      <div class="mem-list" id="memList"></div>
+    </div>
+
+    <div id="memPaneProject" hidden>
+      <div class="mem-note">
+        项目记忆是<b>项目里所有同事共用</b>的一份：谁会在这个项目里干活，谁就被带上。
+        项目外的人看不到，也不会带进别的项目。
+      </div>
+      <div class="mem-list" id="memProjList"></div>
+    </div>
+
+    <div class="modal-foot">
+      <button class="btn ghost" id="memBack" hidden>← 返回员工列表</button>
+      <button class="btn ghost danger" id="memClear" hidden>清空这份记忆</button>
+      <button class="btn ghost" data-close>关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 项目里「增加参会人员」浮层 -->
+<div class="mp-pop" id="mpPop" hidden></div>
+
+<!-- 列表项操作菜单 -->
+<div class="tmenu" id="tiMenu" hidden></div>
+
+<!-- 员工选择下拉（任务输入区） -->
+<div class="emp-pop" id="empPop" hidden></div>
+
+<!-- 权限选择下拉（任务/项目输入区） -->
+<div class="perm-pop" id="permPop" hidden></div>
+
+<!-- 确认允许完全访问 -->
+<div class="mask" id="permRiskModal" hidden>
+  <div class="modal risk-modal">
+    <div class="risk-head">
+      <span class="risk-ic">!</span>
+      <h3>确认允许完全访问？</h3>
+      <button class="risk-x" id="riskClose" type="button" title="关闭">×</button>
+    </div>
+    <p class="risk-desc">开启完全访问后，所有任务将减少确认步骤并直接操作您的电脑，请谨慎操作。包括以下内容：</p>
+    <div class="risk-list">
+      <div class="risk-li">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.2h7A1.5 1.5 0 0 1 19 9.7v7.8A1.5 1.5 0 0 1 17.5 19h-13A1.5 1.5 0 0 1 3 17.5Z"/></svg>
+        <div><b>文件操作</b><small>读取、创建、修改、上传或删除此计算机上任意位置的文件</small></div>
+      </div>
+      <div class="risk-li">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7.5 9.5 10 12l-2.5 2.5M12.5 14.5h4"/></svg>
+        <div><b>终端命令</b><small>运行命令、安装软件和更改系统设置</small></div>
+      </div>
+      <div class="risk-li">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 2.5 15.4 0 18-2.5-2.6-2.5-15.4 0-18Z"/></svg>
+        <div><b>访问互联网</b><small>访问网站、发送数据并使用已启用的连接器</small></div>
+      </div>
+    </div>
+    <label class="chk risk-chk"><input type="checkbox" id="riskAck"> 我已了解风险，并对自己数据安全负责</label>
+    <div class="risk-foot">
+      <button class="btn ghost" id="riskCancel" type="button">取消</button>
+      <button class="btn primary risk-ok" id="riskOk" type="button" disabled>允许完全访问</button>
+    </div>
+  </div>
+</div>
+
+<!-- CR 头像浮层 -->
+<div class="cr-pop" id="crPop" hidden>
+  <div class="cr-pop-item" id="crAppearance">
+    <span>外观</span>
+    <div class="theme-switch" id="themeSwitch">
+      <button class="thm" data-theme="light">浅色</button>
+      <button class="thm" data-theme="dark">深色</button>
+    </div>
+  </div>
+  <div class="cr-pop-item" id="crFeedback"><span>意见反馈</span></div>
+  <div class="cr-pop-item" id="crMemory"><span>记忆</span></div>
+  <div class="cr-pop-item" id="crSettings"><span>设置</span></div>
+  <div class="cr-pop-item" id="crExit"><span>退出</span></div>
+</div>
+
+<!-- 意见反馈 -->
+<div class="mask" id="fbModal" hidden>
+  <div class="modal">
+    <h3>意见反馈 <button class="fb-close" data-close>×</button></h3>
+    <textarea id="fbText" class="fb-ta" rows="6" placeholder="描述你遇到的问题"></textarea>
+    <div class="fb-row">
+      <button class="btn tiny ghost" id="fbImgBtn">🖼 上传图片 <span id="fbImgCount">0/6</span></button>
+      <input type="file" id="fbImgFile" accept="image/*" multiple hidden>
+      <span class="fb-count" id="fbCount">0/10000</span>
+    </div>
+    <div class="fb-thumbs" id="fbThumbs"></div>
+    <label class="chk fb-log"><input type="checkbox" id="fbLog" checked> 上传日志 &nbsp;<a href="#" id="fbPrivacy">隐私保护声明</a></label>
+    <div class="modal-foot">
+      <button class="btn ghost" id="fbDiag">智能诊断</button>
+      <button class="btn primary" id="fbSubmit" disabled>提交反馈</button>
+    </div>
+  </div>
+</div>
+
+<!-- 产出物预览：图 / 文本 / 源码 / 下载 -->
+<div class="mask" id="ovModal" hidden>
+  <div class="modal wide ov-modal">
+    <div class="ov-head">
+      <div class="ov-hl">
+        <h3 id="ovTitle">产出物</h3>
+        <span class="ot-badge" id="ovType">文件</span>
+      </div>
+      <button class="btn ghost tiny" data-close-ov>关闭</button>
+    </div>
+    <div class="ov-meta" id="ovMeta"></div>
+    <div class="ov-body" id="ovBody"></div>
+    <div class="modal-foot ov-foot">
+      <a class="btn ghost" id="ovOpen" target="_blank" rel="noopener" hidden>在新窗口打开</a>
+      <button class="btn ghost" id="ovCode">查看源码</button>
+      <button class="btn ghost" id="ovSaveLocal">存到本机文件夹</button>
+      <a class="btn primary" id="ovDl" href="#" download>下载到本地</a>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
-<script src="./app.js"></script>
+<datalist id="roleDl"></datalist>
+
+<!-- 积分明细：余额三数 + 逐笔流水（消耗按「赠送/充值」两个桶分开列） -->
+<div class="mask" id="pointsMask" hidden>
+  <div class="dlg pts-dlg" role="dialog" aria-label="积分明细">
+    <header class="pts-hd">
+      <b>我的积分</b>
+      <button class="pts-x" id="ptsClose" type="button" title="关闭">×</button>
+    </header>
+
+    <div class="pts-bal">
+      <div class="pts-total"><span>总余额</span><b id="ptsTotal">—</b></div>
+      <div class="pts-split">
+        <div><span>赠送积分</span><b id="ptsGift">—</b></div>
+        <div><span>充值积分</span><b id="ptsPaid">—</b></div>
+      </div>
+      <div class="pts-rate" id="ptsRate"></div>
+      <div class="pts-ids" id="ptsIds"></div>
+      <div class="pts-at" id="ptsAt"></div>
+    </div>
+
+    <div class="pts-tabs" id="ptsTabs">
+      <button class="on" type="button" data-tab="all">全部</button>
+      <button type="button" data-tab="spend">消耗</button>
+      <button type="button" data-tab="spend_gift">赠送积分消耗</button>
+      <button type="button" data-tab="spend_paid">充值积分消耗</button>
+      <button type="button" data-tab="recharge">充值</button>
+      <button type="button" data-tab="grant">赠送</button>
+      <button type="button" data-tab="admin">充入</button>
+    </div>
+
+    <div class="pts-list" id="ptsList"><div class="pts-empty">正在读取…</div></div>
+
+    <footer class="pts-foot">
+      <span id="ptsFoot"></span>
+      <button class="btn tiny primary" id="ptsRecharge" type="button">去充值</button>
+    </footer>
+  </div>
+</div>
+
+<!-- 充值：档位 → 收款码 → 回填交易单号 → 人工核对后到账 -->
+<div class="mask" id="payMask" hidden>
+  <div class="dlg pay-dlg" role="dialog" aria-label="充值">
+    <header class="pts-hd">
+      <b>充值积分</b>
+      <button class="pts-x" id="payClose" type="button" title="关闭">×</button>
+    </header>
+    <div class="pay-body" id="payBody"></div>
+  </div>
+</div>
+
+<script src="./cloud-config.js?v=20261104K"></script>
+<script src="./cloud.js?v=20261104K"></script>
+<script src="./session.js?v=20261104K"></script>
+<script src="./localfs.js?v=20261104K"></script>
+<script src="./roles.js?v=20261104K"></script>
+<script src="./states.js?v=20261104K"></script>
+<script src="./contract.js?v=20261104K"></script>
+<script src="./traits.js?v=20261104K"></script>
+  <script src="./nameorder.js?v=20261104K"></script>
+<script src="./attach.js?v=20261104K"></script>
+<script src="./voice.js?v=20261104K"></script>
+<script src="./judge.js?v=20261104K"></script>
+<script src="./evalkit.js?v=20261104K"></script>
+<script src="./agent.js?v=20261104K"></script>
+<script src="./meeting.js?v=20261104K"></script>
+<script src="./review.js?v=20261104K"></script>
+<script src="./app.js?v=20261104K"></script>
+<script src="./admin.js?v=20261104K"></script>
 </body>
 </html>

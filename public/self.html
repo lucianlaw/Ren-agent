@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ren Agent · 只读自审</title>
+<style>
+  :root{
+    --bg:#fbfbf9; --panel:#fff; --line:#e6e4dd; --line2:#f0eee8;
+    --text:#22201c; --sub:#5f5c55; --mute:#8f8b82;
+    --blue:#2f6fd0; --blue-soft:#eaf2fd;
+    --amber:#9a6a12; --amber-soft:#fdf5e4;
+    --red:#b4342f; --green:#2c7a52;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:13px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:940px;margin:0 auto;padding:26px 20px 80px}
+  h1{font-size:16px;font-weight:600;margin:0 0 4px}
+  .lede{color:var(--sub);font-size:12.5px;margin:0 0 20px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  label{font-size:11.5px;color:var(--mute);display:block;margin-bottom:5px}
+  input,select,textarea{font-family:inherit;font-size:13px;color:var(--text);
+    background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px 10px;outline:none}
+  input:focus,select:focus,textarea:focus{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-soft)}
+  textarea{width:100%;resize:vertical;min-height:64px;line-height:1.6}
+  .grow{flex:1 1 220px;min-width:0}
+  button{font-family:inherit;font-size:12.5px;border-radius:8px;padding:8px 14px;cursor:pointer;
+    border:1px solid var(--line);background:#fff;color:var(--text)}
+  button:hover{border-color:var(--line);background:#faf9f6}
+  button.primary{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:500}
+  button.primary:hover{background:#2a63ba}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  button.tiny{padding:5px 10px;font-size:11.5px;border-radius:20px;color:var(--sub)}
+  button.tiny:hover{color:var(--text);border-color:#d8d5cc}
+  .presets{display:flex;gap:7px;flex-wrap:wrap;margin:10px 0 0}
+  .hint{font-size:11.5px;color:var(--mute);margin-top:8px}
+  .hint.err{color:var(--red)}
+  .hint.ok{color:var(--green)}
+  .log{display:flex;flex-direction:column;gap:10px;margin-top:4px}
+  .msg{border:1px solid var(--line);border-radius:10px;padding:11px 13px;background:#fff}
+  .msg .who{font-size:11px;color:var(--mute);margin-bottom:5px;letter-spacing:.3px}
+  .msg.q{background:var(--blue-soft);border-color:#d7e5fa}
+  .msg.a .body{white-space:pre-wrap}
+  .tool{border:1px solid var(--amber-soft);background:#fffdf7;border-radius:8px;padding:9px 11px;margin:8px 0}
+  .tool .hd{font-family:var(--mono);font-size:11.5px;color:var(--amber);word-break:break-all}
+  .tool pre{margin:6px 0 0;font-family:var(--mono);font-size:11px;color:var(--sub);
+    white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;
+    background:#fcfbf6;border-radius:6px;padding:7px 9px}
+  .tool .meta{font-size:10.5px;color:var(--mute);margin-top:5px}
+  .stat{font-size:11px;color:var(--mute);font-family:var(--mono)}
+  .empty{color:var(--mute);font-size:12.5px;text-align:center;padding:24px 0}
+  .warn{background:var(--amber-soft);border:1px solid #f2e2bd;border-radius:8px;padding:10px 12px;
+    font-size:12px;color:#6b4a0c;margin-bottom:14px}
+  code{font-family:var(--mono);font-size:11.5px;background:#f4f2ec;padding:1px 5px;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>只读自审</h1>
+  <p class="lede">让 Ren Agent 只能<b>读</b>自己的源码来回答问题：不给写、不给跑命令。用来验证它对自己的代码理解到什么程度。</p>
+
+  <div class="warn">这个页面是探针，不是产品功能。它只有三个只读操作，源码里 <code>admins.json</code> 和令牌文件都被拒绝读取。</div>
+
+  <div class="card">
+    <div class="row">
+      <div class="grow">
+        <label>自审令牌</label>
+        <input id="token" type="password" placeholder="self-token.json 里的 token" autocomplete="off">
+      </div>
+      <div style="width:190px">
+        <label>模型</label>
+        <select id="model"><option value="">读取中…</option></select>
+      </div>
+      <div style="align-self:flex-end">
+        <button id="ping" type="button">验证令牌</button>
+      </div>
+    </div>
+    <div class="hint" id="hint"></div>
+  </div>
+
+  <div class="card">
+    <label>问它一个关于自己代码的问题</label>
+    <textarea id="q" placeholder="例如：一个任务显示 running 但一直没有新事件，你会按什么顺序排查？每条都要指出文件和函数。"></textarea>
+    <div class="presets" id="presets"></div>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" id="run" type="button">开始自审</button>
+      <button id="stop" type="button" disabled>停止</button>
+      <button class="tiny" id="copy" type="button">复制对话</button>
+      <span class="stat" id="stat"></span>
+    </div>
+  </div>
+
+  <div class="log" id="log"><div class="empty">还没有开始。填好令牌，挑一个问题点「开始自审」。</div></div>
+</div>
+
+<script src="cloud-config.js"></script>
+<script src="cloud.js"></script>
+<script>
+(function () {
+  const $ = s => document.querySelector(s);
+  const logEl = $('#log'), hintEl = $('#hint'), statEl = $('#stat');
+  let abort = null, running = false;
+  const history = [];   // 给「复制对话」用
+
+  const PRESETS = [
+    '一个任务显示 running 但一直没有新事件，你会按什么顺序排查？每条都要指出文件和函数名。',
+    '这个项目里「任务」和「项目」的状态是怎么归一化的？两套状态词表在哪对齐、谁在调用？',
+    '如果积分扣到 0，任务是怎么停下来的？从判断到落库要经过哪几个函数？',
+    '我要加一个新的工具，需要改哪几个文件、哪几个地方？按改动顺序列出来。'
+  ];
+
+  /* 只读工具的声明：和 lib/selfsrc.js 里的三个操作一一对应，
+     这里多一个都没有——想加写能力，得先改服务端，前端改不出来。 */
+  const TOOLS = [
+    {
+      type: 'function',
+      function: {
+        name: 'self_tree',
+        description: '列出源码文件（相对路径 + 字节数）。先用它摸清结构，再用 self_grep 定位。',
+        parameters: {
+          type: 'object',
+          properties: { dir: { type: 'string', description: '只看某个目录，如 public 或 lib；留空看全部' } }
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'self_read',
+        description: '按行读一个源码文件，返回带行号的文本。大文件先 grep 定位再读片段，不要整篇读。',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: '相对路径，如 public/states.js' },
+            from: { type: 'number', description: '起始行，默认 1' },
+            lines: { type: 'number', description: '读多少行，默认 200，最多 400' }
+          },
+          required: ['path']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'self_grep',
+        description: '在全部源码里按正则搜索，返回「文件:行号: 内容」。定位函数定义、调用点、常量用这个。',
+        parameters: {
+          type: 'object',
+          properties: {
+            q: { type: 'string', description: '正则或普通字符串' },
+            glob: { type: 'string', description: '只搜路径含这个片段的文件，如 meeting.js' }
+          },
+          required: ['q']
+        }
+      }
+    }
+  ];
+
+  const SYSTEM = [
+    '你是 Ren Agent 本体，现在在「只读自审」模式。',
+    '你手上只有三个只读工具：看目录、读文件片段、全文搜索。你不能改任何文件，也不能执行命令。',
+    '',
+    '回答要求（会被逐条核对）：',
+    '1. 每条结论都必须带证据：`文件路径:行号` 或函数名。没有证据的判断不要写。',
+    '2. 先 self_grep 定位，再 self_read 精读。不要凭印象猜，也不要整篇读大文件。',
+    '3. 不确定就直说「代码里没找到」，不要编一个听起来合理的答案。',
+    '4. 用中文回答，结构是：先给结论，再给排查/改动顺序，每条一行。',
+    '5. 最多 10 轮工具调用，够用就停。',
+    '6. 结果里带「← 未上线」标注的文件（部署目录里的历史残留，静态路由取不到）不是线上在跑的代码，里面的写死数据不能当作实现来引用。',
+    '7. self_grep 是正则匹配，一次没有结果不等于不存在，要换个更宽的词再试一次：搜 `export function` 会漏掉 `export async function`，搜 `const HANDLERS` 会漏掉 `async function`。没搜到就说「换关键词再找」，别直接下「没有这个函数」的结论。',
+    '8. 标「可选」之前必须先确认跳过它会不会让功能**静默失效**：只要有白名单 / 过滤 / 默认分支会把新东西丢掉且不报错，那一步就是必做，不是可选。找不到这类过滤，就说你没找到，别默认它是可选的。'
+  ].join('\n');
+
+  function setHint(t, cls) {
+    hintEl.textContent = t || '';
+    hintEl.className = 'hint' + (cls ? ' ' + cls : '');
+  }
+
+  function push(el) { logEl.appendChild(el); el.scrollIntoView({ block: 'end', behavior: 'smooth' }); }
+
+  function clearEmpty() {
+    const e = logEl.querySelector('.empty');
+    if (e) e.remove();
+  }
+
+  function block(cls, who) {
+    const d = document.createElement('div');
+    d.className = 'msg ' + cls;
+    const w = document.createElement('div');
+    w.className = 'who';
+    w.textContent = who;
+    const b = document.createElement('div');
+    b.className = 'body';
+    d.appendChild(w); d.appendChild(b);
+    return { root: d, body: b };
+  }
+
+  function toolCard(name, argsText) {
+    const d = document.createElement('div');
+    d.className = 'tool';
+    const hd = document.createElement('div');
+    hd.className = 'hd';
+    hd.textContent = name + '(' + argsText + ')';
+    const pre = document.createElement('pre');
+    pre.textContent = '…';
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    d.appendChild(hd); d.appendChild(pre); d.appendChild(meta);
+    return { root: d, pre, meta };
+  }
+
+  async function api(path) {
+    const res = await fetch(window.withSC ? window.withSC(path) : path);
+    return res.json();
+  }
+
+  async function selfTool(token, name, args) {
+    const res = await fetch(window.withSC ? window.withSC('/api/self/tool') : '/api/self/tool', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token, name, args })
+    });
+    const j = await res.json();
+    if (!j.ok) throw new Error(j.error || '自审接口失败');
+    return j.result;
+  }
+
+  /* 一次模型调用：边收边回显，最后返回内容 + 工具调用 */
+  async function callModel(payload, onText, signal) {
+    payload.stream = true;
+    payload.stream_options = { include_usage: true };
+    payload.signal = signal;
+    let content = '';
+    const calls = new Map();
+    for await (const chunk of window.CLOUD.chatStream(payload)) {
+      const delta = chunk && chunk.choices && chunk.choices[0] && chunk.choices[0].delta;
+      if (!delta) continue;
+      if (delta.content) { content += delta.content; onText(delta.content); }
+      if (Array.isArray(delta.tool_calls)) {
+        for (const tc of delta.tool_calls) {
+          const i = tc.index == null ? 0 : tc.index;
+          const cur = calls.get(i) || { id: '', name: '', arguments: '' };
+          if (tc.id) cur.id = tc.id;
+          if (tc.function && tc.function.name) cur.name = tc.function.name;
+          if (tc.function && tc.function.arguments) cur.arguments += tc.function.arguments;
+          calls.set(i, cur);
+        }
+      }
+    }
+    return { content, calls: [...calls.values()].filter(c => c.name) };
+  }
+
+  function parseArgs(s) {
+    try { return JSON.parse(s || '{}'); } catch { return {}; }
+  }
+
+  async function runOnce() {
+    const token = $('#token').value.trim();
+    const q = $('#q').value.trim();
+    if (!token) return setHint('先填令牌', 'err');
+    if (!q) return setHint('先写一个问题', 'err');
+    if (running) return;
+
+    running = true;
+    abort = new AbortController();
+    $('#run').disabled = true;
+    $('#stop').disabled = false;
+    setHint('跑起来了。它在读自己的代码。', '');
+
+    clearEmpty();
+    const qb = block('q', '你问的');
+    qb.body.textContent = q;
+    push(qb.root);
+
+    const ab = block('a', 'Ren Agent');
+    push(ab.root);
+
+    const messages = [
+      { role: 'system', content: SYSTEM },
+      { role: 'user', content: q }
+    ];
+    const model = $('#model').value || '';
+    let rounds = 0, toolCount = 0;
+    const t0 = Date.now();
+
+    try {
+      while (rounds < 12) {
+        rounds++;
+        statEl.textContent = `第 ${rounds} 轮 · 工具调用 ${toolCount} 次`;
+        const payload = { model, messages, tools: TOOLS, tool_choice: 'auto', temperature: 0.2 };
+        let roundText = '';
+        const r = await callModel(payload, t => { roundText += t; ab.body.textContent += t; }, abort.signal);
+
+        if (!r.calls.length) {
+          if (!r.content.trim() && !roundText.trim()) ab.body.textContent = '（它没有回答，也没调工具）';
+          break;
+        }
+
+        messages.push({
+          role: 'assistant',
+          content: r.content || '',
+          tool_calls: r.calls.map((c, i) => ({
+            id: c.id || 'call_' + rounds + '_' + i,
+            type: 'function',
+            function: { name: c.name, arguments: c.arguments || '{}' }
+          }))
+        });
+
+        for (const c of r.calls) {
+          toolCount++;
+          const args = parseArgs(c.arguments);
+          const card = toolCard(c.name, JSON.stringify(args));
+          push(card.root);
+          let out;
+          try {
+            out = await selfTool(token, c.name, args);
+          } catch (e) {
+            out = { ok: false, output: '调用失败：' + (e.message || e) };
+          }
+          const text = String(out.output || '');
+          card.pre.textContent = text.slice(0, 4000) + (text.length > 4000 ? `\n…（还有 ${text.length - 4000} 字）` : '');
+          card.meta.textContent = out.ok
+            ? `${out.ms}ms` + (out.meta && out.meta.truncated ? ' · 截断，可再读下一段' : '') + (out.meta && out.meta.more ? ' · 还有更多' : '')
+            : '这一步没做成';
+          history.push(`[工具] ${c.name} ${JSON.stringify(args)}\n${text.slice(0, 1200)}`);
+
+          messages.push({
+            role: 'tool',
+            tool_call_id: c.id || 'call_' + rounds + '_' + c.name,
+            content: text.slice(0, 12000)
+          });
+        }
+      }
+      const secs = ((Date.now() - t0) / 1000).toFixed(1);
+      statEl.textContent = `${rounds} 轮 · ${toolCount} 次工具 · ${secs}s`;
+      history.unshift(`[问题] ${q}`);
+      history.push(`[回答]\n${ab.body.textContent}`);
+      setHint('跑完了。看它的每条结论有没有真的指到文件和函数。', 'ok');
+    } catch (e) {
+      const m = String((e && e.message) || e);
+      ab.body.textContent += (ab.body.textContent ? '\n\n' : '') + '出错了：' + m;
+      if (/INSUFFICIENT|积分/.test(m)) setHint('积分不够了，先去主应用充值再试', 'err');
+      else if (/abort/i.test(m)) setHint('已停止', '');
+      else setHint('出错了：' + m, 'err');
+    } finally {
+      running = false;
+      abort = null;
+      $('#run').disabled = false;
+      $('#stop').disabled = true;
+    }
+  }
+
+  function paintPresets() {
+    const box = $('#presets');
+    PRESETS.forEach(p => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tiny';
+      b.textContent = p.length > 26 ? p.slice(0, 26) + '…' : p;
+      b.title = p;
+      b.onclick = () => { $('#q').value = p; $('#q').focus(); };
+      box.appendChild(b);
+    });
+  }
+
+  async function boot() {
+    paintPresets();
+    try { $('#token').value = localStorage.getItem('selfToken') || ''; } catch (e) { /* 隐私模式 */ }
+    $('#token').addEventListener('change', () => {
+      try { localStorage.setItem('selfToken', $('#token').value.trim()); } catch (e) { /* ignore */ }
+    });
+
+    try {
+      await window.CLOUD.ready();
+      const { session } = await window.CLOUD.getSession();
+      if (!session) {
+        setHint('还没登录。先在主应用登录，再回来刷新这页（模型通道要走登录态）。', 'err');
+      } else {
+        setHint('已登录。填令牌后点「验证令牌」。', '');
+      }
+      const models = await window.CLOUD.listModels();
+      const sel = $('#model');
+      sel.innerHTML = '';
+      (models || []).forEach(m => {
+        const o = document.createElement('option');
+        o.value = m.id;
+        o.textContent = m.id + (m.owned_by ? ` · ${m.owned_by}` : '');
+        sel.appendChild(o);
+      });
+      if (!sel.options.length) {
+        const o = document.createElement('option');
+        o.value = '';
+        o.textContent = '（没读到模型列表）';
+        sel.appendChild(o);
+      }
+    } catch (e) {
+      setHint('云 SDK 没起来：' + (e.message || e), 'err');
+    }
+
+    $('#ping').onclick = async () => {
+      const t = $('#token').value.trim();
+      if (!t) return setHint('先填令牌', 'err');
+      setHint('验证中…', '');
+      try {
+        const j = await api('/api/self/ping?token=' + encodeURIComponent(t));
+        if (j.ok) setHint('令牌有效，可以开始。', 'ok');
+        else setHint(j.error || '令牌无效', 'err');
+      } catch (e) { setHint('验证失败：' + (e.message || e), 'err'); }
+    };
+
+    $('#run').onclick = runOnce;
+    $('#stop').onclick = () => { if (abort) abort.abort(); };
+    $('#copy').onclick = async () => {
+      const txt = history.join('\n\n---\n\n');
+      if (!txt) return setHint('还没有内容可复制', 'err');
+      try { await navigator.clipboard.writeText(txt); setHint('已复制，可以贴给我看。', 'ok'); }
+      catch (e) { setHint('复制不了，手动选中吧', 'err'); }
+    };
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>

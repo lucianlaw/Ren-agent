@@ -9,3 +9,12 @@ node_modules/
 .DS_Store
 *.log
 .env
+
+# 只读自审令牌（随部署目录下发，不进版本库）
+self-token.json
+
+# 密钥目录：与部署目录同级。永远不进仓库，也不该进部署包
+.ren-secrets/
+
+# 发布标记：每次发布由 scripts/release.mjs 生成，不进版本库
+build.json
