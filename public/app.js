@@ -6109,6 +6109,64 @@ async function resumeRunStream(emitFn, signal) {
 
 /* 发起一条服务端执行。job 的结构和原来 BOSS.run 的入参一致，
    少一个 emit（含在 job 里），多一个返回值的语义：true = 跑到了收工。 */
+/* ── 请求体瘦身：前置网关 403 的自救 ──
+   现场：任务里生成了一整份 index.html 和 agent_server.py，之后每次续跑都把
+   整段代码随 /api/run 重新 POST 一次。体积上去以后，前置安全网关把它当成
+   攻击载荷，回一个 HTML 拦截页（403）。而前端 r.json() 解析失败，界面上只剩
+   一句「服务端拒绝了这次执行（HTTP 403）」——看着像我们的鉴权拒了，
+   其实请求连我们的 handler 都没进到。
+   砍掉为什么不会丢信息：完整内容就在工作区文件里，模型要看就 read_file；
+   在上下文里背一份几万字的副本，既费 token，又每轮都要过一遍网关。 */
+function slimText(s, head, tail) {
+  const t = String(s == null ? '' : s);
+  if (t.length <= head + tail + 60) return t;
+  return `${t.slice(0, head)}\n…[中间省略 ${t.length - head - tail} 字：全文在工作区文件里，要读就 read_file]…\n${tail ? t.slice(-tail) : ''}`;
+}
+function slimMessages(list, level) {
+  const arr = Array.isArray(list) ? list : [];
+  const head = level >= 2 ? 160 : 700;
+  const tail = level >= 2 ? 0 : 220;
+  const keepTail = level >= 2 ? 2 : 3;
+  const n = arr.length;
+  return arr.map((m, i) => {
+    if (!m || typeof m !== 'object') return m;
+    /* 系统提示是「怎么干活」的规矩，砍了等于换个人 */
+    if (m.role === 'system') return m;
+    const near = i >= n - keepTail;
+    const out = { ...m };
+    if (typeof out.content === 'string') {
+      /* 最后几条可能是老板刚说的这句指令，本来就短，原样留着 */
+      out.content = (near && out.content.length < 6000) ? out.content : slimText(out.content, head, tail);
+    } else if (Array.isArray(out.content)) {
+      out.content = out.content.map(c => (c && c.type === 'text')
+        ? { ...c, text: slimText(c.text, head, tail) } : c);
+    }
+    /* 写文件的工具调用：整份文件内容就在 arguments 里。已经执行完了，
+       历史里再留全文只是给网关递刀。 */
+    if (Array.isArray(out.tool_calls)) {
+      out.tool_calls = out.tool_calls.map(tc => {
+        const a = tc && tc.function && tc.function.arguments;
+        if (typeof a !== 'string' || a.length <= 1000) return tc;
+        return { ...tc, function: { ...tc.function, arguments: '{"note":"文件全文已省略；内容已在工作区，需要就 read_file"}' } };
+      });
+    }
+    return out;
+  });
+}
+/* 图片是 dataURL，一张顶几百 KB 文字。去掉 base64 但**保留路径**：
+   view_image 靠路径就能看图，主模型也能在工作区读到它。 */
+function slimRunPayload(payload, level) {
+  const p = { ...payload };
+  if (p.task && typeof p.task === 'object') {
+    p.task = { ...p.task, messages: slimMessages(p.task.messages, level) };
+  }
+  if (Array.isArray(p.followUpImages)) {
+    p.followUpImages = p.followUpImages.map(x => (x && x.dataUrl) ? { ...x, dataUrl: '' } : x);
+  }
+  return p;
+}
+const payloadKB = p => Math.round(JSON.stringify(p).length / 1024);
+
 async function agentRun(job) {
   const token = (window.CLOUD && typeof CLOUD.accessToken === 'function')
     ? await CLOUD.accessToken().catch(() => '') : '';
@@ -6142,27 +6200,68 @@ async function agentRun(job) {
     visionModels: pickVisionModels(),
     tools: Array.isArray(window.CUSTOM_TOOLS) ? window.CUSTOM_TOOLS : []
   };
-  let r;
-  try {
-    r = await fetch(window.withSC('/api/run'), {
+  /* 体积先看一眼：与其发出去被网关挡一次、再瘦身重试（老板白等两个来回），
+     不如第一发就瘦。四百多 KB 的请求体在这条网关后面基本必被拦。 */
+  let body = payload;
+  const kb0 = payloadKB(payload);
+  if (kb0 > 420) {
+    body = slimRunPayload(payload, 1);
+    toast(`这次上下文里有大段代码（${kb0}KB），已精简到 ${payloadKB(body)}KB 再发；完整内容还在工作区文件里`);
+  }
+
+  const post = async (b) => {
+    const resp = await fetch(window.withSC('/api/run'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(b),
       signal: job.signal
     });
+    /* 成功时不能读 body：那是一条 SSE 流，读成文本就等于把它消费掉了，
+       后面 consumeRunStream 只会拿到空壳。只有失败才去取错误内容。 */
+    if (resp.ok) return { resp, raw: '', j: null };
+    const raw = await resp.text().catch(() => '');
+    let j = null;
+    try { j = JSON.parse(raw); } catch { j = null; }
+    return { resp, raw, j };
+  };
+
+  let r, raw = '', j = null;
+  try {
+    ({ resp: r, raw, j } = await post(body));
   } catch (e) {
     if (e && e.name === 'AbortError') throw e;
     throw new Error(`连不上服务端：${(e && e.message) || '网络错误'}`);
   }
+
+  /* 被前置网关拦下来（403/413，或者回的压根不是 JSON）：压到最小再发一次。
+     这一步必须有——不然任务一旦生成过大文件，之后每一轮都会死在这儿，
+     老板只能看着「继续跑」反复失败，而每次失败给出的信息都是同一句 403。 */
+  if (!r.ok && !(j && j.code === 'busy') && (r.status === 403 || r.status === 413 || !j)) {
+    const slim2 = slimRunPayload(body, 2);
+    if (JSON.stringify(slim2).length < JSON.stringify(body).length) {
+      toast('这次请求被前置网关拦了，已把上下文压到最小重发');
+      try {
+        ({ resp: r, raw, j } = await post(slim2));
+      } catch (e) {
+        if (e && e.name === 'AbortError') throw e;
+        throw new Error(`连不上服务端：${(e && e.message) || '网络错误'}`);
+      }
+    }
+  }
+
   if (!r.ok) {
-    const j = await r.json().catch(() => null);
     /* 这个工作区已经有一条在跑：直接挂上去看它的现场，而不是报错收工。
        刷新页面后自动续跑走的就是这条路——原来那条还活着，看见它比重新起一条对。 */
     if (j && j.code === 'busy' && j.runId) {
       toast('这个任务还在服务端跑，已接上现场');
       return attachServerRun(j.runId, job.emit, job.signal, 0);
     }
-    throw new Error((j && j.error) || `服务端拒绝了这次执行（HTTP ${r.status}）`);
+    /* 回的不是 JSON ⇒ 拦在网关，不是我们的鉴权。把拦截页开头几个字带出来：
+       只剩一句「HTTP 403」的话，谁都分不清是自己拒的还是网关拒的。 */
+    const peek = !j && raw
+      ? String(raw).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140) : '';
+    throw new Error((j && j.error)
+      || `服务端拒绝了这次执行（HTTP ${r.status}）${peek ? '：' + peek : ''}`);
   }
   SRV.on = true;
   SRV.runId = String(job.task.id || '');

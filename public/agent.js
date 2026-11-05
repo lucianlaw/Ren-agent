@@ -293,12 +293,33 @@
   }
 
   /* 存云之前把 base64 图片摘掉：上下文要能续跑，但不能把几 MB 的图塞进数据库 */
+  /* 存云之前瘦身。三件事：
+     ① 图片 base64 摘掉（几 MB 塞进数据库没有意义）
+     ② 写文件的工具参数里躺着整份文件内容——它每一轮都会被存一次、读一次、
+        再随 /api/run 传一次。累计到几百 KB 就会被前置网关当成攻击载荷拒掉（403），
+        现场表现是「任务存不上，完整轨迹丢了」。超长的换成一句说明即可：
+        文件本来就在工作区，模型要读就 read_file。
+     ③ 单条超长正文同样处理。 */
   function leanMessages(list) {
-    return list.map(m => {
-      if (!Array.isArray(m.content)) return m;
-      const txt = m.content.filter(c => c && c.type === 'text').map(c => c.text).join('\n');
-      const n = m.content.filter(c => c && c.type === 'image_url').length;
-      return { ...m, content: `${txt}${n ? `\n（另有 ${n} 张图片，出于体积考虑不再随上下文重放）` : ''}` };
+    return (Array.isArray(list) ? list : []).map(m => {
+      if (!m || typeof m !== 'object') return m;
+      const out = { ...m };
+      if (Array.isArray(out.content)) {
+        const txt = out.content.filter(c => c && c.type === 'text').map(c => c.text).join('\n');
+        const n = out.content.filter(c => c && c.type === 'image_url').length;
+        out.content = `${txt}${n ? `\n（另有 ${n} 张图片，出于体积考虑不再随上下文重放）` : ''}`;
+      }
+      if (Array.isArray(out.tool_calls)) {
+        out.tool_calls = out.tool_calls.map(tc => {
+          const a = tc && tc.function && tc.function.arguments;
+          if (typeof a !== 'string' || a.length <= 4000) return tc;
+          return { ...tc, function: { ...tc.function, arguments: '{"note":"文件全文已省略；内容已在工作区，需要就 read_file"}' } };
+        });
+      }
+      if (typeof out.content === 'string' && out.content.length > 20000) {
+        out.content = out.content.slice(0, 600) + '\n…[内容过长已省略：全文在工作区或产出文件里，要看就 read_file]…';
+      }
+      return out;
     });
   }
 
