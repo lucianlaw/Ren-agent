@@ -868,7 +868,7 @@
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        scope, name: 'write_file', perms,
+        scope, name: 'write_file', perms, device: window.REN_DEVICE || '',
         args: { path: `.ctx/${slug}-notes.md`, content: `# 前情提要\n\n${notes}\n` }
       })
     }).catch(() => {});
@@ -1442,6 +1442,9 @@
         signal: ctl.signal,
         body: JSON.stringify({
           scope, name, args, perms,
+          /* 设备标识给服务端判路径租约用：两台设备写同一个文件时，后到的那一步要被告知
+             「另一边正在写」，而不是默默覆盖。它不是权限，改它也就多占一个租约。 */
+          device: window.REN_DEVICE || '',
           custom: custom ? { url: custom.url, method: custom.method, headers: custom.headers } : undefined
         })
       });

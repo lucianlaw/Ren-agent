@@ -16,6 +16,9 @@ self-token.json
 # 密钥目录：与部署目录同级。永远不进仓库，也不该进部署包
 .ren-secrets/
 
+# 状态库（任务注册表 / 锁 / 限流计数），同样在部署目录之外
+.ren-state/
+
 # 发布标记：每次发布由 scripts/release.mjs 生成，不进版本库
 build.json
 

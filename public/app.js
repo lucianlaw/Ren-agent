@@ -502,6 +502,28 @@ async function chargeMeeting(m, delta, total) {
 window.APP = window.APP || {};
 window.APP.chargeMeeting = chargeMeeting;
 
+/* ── 设备标识 ──
+   一个账号现在允许几台设备各跑一个任务，服务端靠这个标识区分「谁在跑」。
+   它不需要保密（不是凭证），只需要稳定：换一次就等于换了一台设备，
+   原来那条锁会挂在一个再也不会出现的名字上，直到 TTL 到期。
+
+   取不到 localStorage 时返回空串——服务端会退回「按账号锁」，
+   也就是回到以前的行为。宁可少一点并发，也不能因为一个标识没拿到就变成无锁。 */
+function deviceKey() {
+  if (window.REN_DEVICE !== undefined) return window.REN_DEVICE;
+  let k = '';
+  try {
+    k = localStorage.getItem('ren_device') || '';
+    if (!/^[a-z0-9_-]{6,40}$/.test(k)) {
+      k = 'd' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+      localStorage.setItem('ren_device', k);
+    }
+  } catch { k = ''; }
+  window.REN_DEVICE = k;
+  return k;
+}
+deviceKey();
+
 /* 只读配置（不领赠送）：登录页要靠它显示赠送额，游客态也要看得到汇率 */
 async function loadCfgEarly() {
   try {
@@ -5867,6 +5889,9 @@ async function agentRun(job) {
   const payload = {
     uid: state.scope,
     token,
+    /* 设备标识决定占用锁的粒度：带上了，手机和电脑才能各跑一个。
+       不带（老页面 / 无 localStorage）服务端按账号锁，行为退回以前。 */
+    device: deviceKey(),
     task: job.task,
     staff: job.staff || null,
     settings: job.settings || {},

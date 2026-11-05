@@ -45,6 +45,7 @@ import { previewOffice } from './lib/office.js';
 import { digestFiles } from './lib/digest.js';
 import { selfAuth, treeSrc, readSrc, grepSrc } from './lib/selfsrc.js';
 import { startRun, warmup } from './lib/agent-host.js';
+import * as state from './lib/state.js';
 import crypto from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -289,6 +290,24 @@ function ownsRun(run) {
   return !!me.scope && me.scope === run.scope;
 }
 
+/* 内存里找不到，未必是「没这个任务」，也可能是「重启过，任务已经被收尸了」。
+   这两种情况对用户的含义完全不同：前者是「你记错了吧」，后者是「你的活干到一半断了」。
+   所以去状态层问一句，把中断原因带出来。查不到才算真的没有。 */
+function goneRun(res, runId) {
+  const me = currentAuth();
+  const row = state.runGet(runId);
+  if (row && me && (me.internal || me.scope === row.scope)) {
+    const why = row.status === 'interrupted'
+      ? (row.reason || '服务重启，任务中断')
+      : '这个任务在服务端已经结束了';
+    return send(res, 410, {
+      ok: false, code: row.status === 'interrupted' ? 'interrupted' : 'gone',
+      error: why, status: row.status, title: row.title || '', endedAt: row.endedAt || 0
+    });
+  }
+  return send(res, 404, { ok: false, error: '这个任务在服务端已经结束了' });
+}
+
 /* 请求里的标识可能是账号 uid（新）或 32 位随机串（旧页面）。统一映射成目录名：
    uid 走派生，旧串原样用；映射不了就原样返回，交给后面那句 SCOPE_RE 拦成 400。 */
 function scopeKey(v) {
@@ -407,10 +426,24 @@ function getToken(uid) {
   return v.token;
 }
 
-/* 进行中的服务端任务：id -> ServerRun。同一个 scope 只允许一个在跑，
-   否则两端同时改同一个文件，后写的覆盖先写的，而且没人知道发生过。 */
+/* 进行中的服务端任务：id -> ServerRun。
+   这张表仍然只在内存里，理由要说清楚：Run 上面挂着事件总线、abort 控制器、
+   agent 的作用域，这些都是活对象，没法序列化。把它搬到磁盘上不是「持久化」，
+   是「假装任务还活着」——真正的进程已经没了。
+   所以状态层（lib/state.js）持久化的是**谁在跑**，不是任务本身：
+     · 重启后能告诉用户「这个任务中断了」，而不是让界面一直转圈
+     · 两个进程能看到彼此的占用，不会同时写同一个工作区 */
 const RUNS = new Map();
-const LIVE_BY_SCOPE = new Map();
+
+/* 启动顺序有讲究：先 init（它顺手收掉上次进程遗留的 running 行），
+   再注册心跳供给。反过来的话，第一次心跳会把一堆早已死掉的 id 当成活的报上去。 */
+const STATE = state.init();
+state.onHeartbeat(() => {
+  const ids = [];
+  for (const [id, r] of RUNS) if (r.alive) ids.push(id);
+  return ids;
+});
+state.startHeartbeat();
 
 function sweeper() {
   const cut = Date.now() - 30 * 60e3;
@@ -419,6 +452,34 @@ function sweeper() {
   }
 }
 setInterval(sweeper, 5 * 60e3).unref();
+
+/* 一个账号能不能再起一个任务，判据从「内存里有没有对应 Run」变成了「锁在谁手里」。
+   锁的粒度决定并发边界：
+     scope  → 一账号一个（原来的行为）
+     scope+设备 → 手机和电脑各跑一个。设备标识由前端生成并持久化，
+                 没有设备标识的老客户端自动退回按账号锁，不会因此变成无锁。 */
+function deviceOf(v) {
+  const d = String(v || '').trim().toLowerCase();
+  return /^[a-z0-9_-]{6,40}$/.test(d) ? d : '';
+}
+function runLockKey(scope, device) {
+  return device ? `run:${scope}:${device}` : `run:${scope}`;
+}
+
+/* 谁挡着这个任务。
+   两种锁要互相看得见，否则会出现「第三条通道」：
+     · 带设备标识的客户端占的是 run:<scope>:<device>
+     · 不带设备标识的客户端占的是 run:<scope>
+   如果只查自己那一把，一台老设备（没升级页面、或者 localStorage 不可用）
+   就能在一个已经有任务在跑的账号上再起一个——三份任务同时改一个目录。
+   所以两把锁互为约束：有设备的也要看老锁，没设备的要看所有设备锁。 */
+function lockConflict(scope, device) {
+  const base = `run:${scope}`;
+  if (device) {
+    return state.lockHolder(`${base}:${device}`) || state.lockHolder(base) || '';
+  }
+  return state.lockHolder(base) || state.lockHolders(`${base}:`)[0] || '';
+}
 
 /* ── 限流 ──
    粗粒度：每分钟每个主体最多 120 次工具调用，防被人当免费沙箱。
@@ -431,16 +492,16 @@ setInterval(sweeper, 5 * 60e3).unref();
  *
  * 没验身份的请求（/api/health、静态资源、老路径）仍按 IP 兜底，量很小。
  * 已验身份的多给一倍额度：一个任务动辄几十步工具调用，120 步/分钟只够单人慢用。 */
-const hits = new Map();
 const RATE_WINDOW = 60e3;
 function rateOK(req) {
   const a = currentAuth();
   const who = a && a.scope ? `s:${a.scope}` : `ip:${req.socket.remoteAddress || 'x'}`;
+  /* key 里带窗口序号：换一分钟就是一个新桶，不用去清理旧桶。
+     计数落到磁盘（lib/state.js），所以「重启把 429 洗掉」不再是免费通道——
+     以前重启一次，被打满的额度就回到零，这条谁都能想到。 */
   const key = `${who}|${Math.floor(Date.now() / RATE_WINDOW)}`;
-  const n = (hits.get(key) || 0) + 1;
-  hits.set(key, n);
-  if (hits.size > 5000) hits.clear();
-  return n <= (who.startsWith('s:') ? 240 : 120);
+  const limit = who.startsWith('s:') ? 240 : 120;
+  return state.takeRate(key, RATE_WINDOW, limit).ok;
 }
 
 /* 审计日志用的来源信息（放在反代后面时优先取 X-Forwarded-For） */
@@ -554,6 +615,9 @@ async function route(req, res) {
             lastAt: b.lastAt, ageHours: b.ageHours, stale: b.stale, lastError: b.lastError
           };
         })() : undefined,
+        /* 状态层：mode 是 memory 就说明这次降级了——磁盘上什么都没存。
+           reaped 是本次启动收掉的中断任务数，非 0 意味着上次是非正常退出。 */
+        state: withKey ? state.stats() : { mode: state.modeOf() },
         workspace: WORKSPACE_BASE,
         // 反代进来的实际头部，用来核对同源判定（不含任何密钥）
         seen: LOCAL_ONLY ? undefined : {
@@ -819,7 +883,15 @@ async function route(req, res) {
         /* scope 一起传下去：磁盘配额要按账号查，而 workspace 只是个路径。
            从路径反推 scope 也行，但那是「靠命名约定」，一旦 WORKSPACE_DIR 被改成
            扁平结构就会静默失效——配额静默失效比报错难查得多。 */
-        : await runTool(name, args, { workspace: root, scope, onTodos: () => {}, fullAccess: level === 'full' });
+        /* leaseOwner：路径租约的「谁」。
+           优先用 runId（同一台设备上不可能有两个 run），否则退到设备标识。
+           两个设备同时写同一个文件才会冲突——这正是要拦的那一种。 */
+        : await runTool(name, args, {
+          workspace: root, scope,
+          runId: String(b.runId || '').slice(0, 64),
+          leaseOwner: deviceOf(b.device) || scope,
+          onTodos: () => {}, fullAccess: level === 'full'
+        });
 
       /* shell 是唯一一条拦不住写入的路径：降权后的子进程想写什么，应用层管不着
          （这是 OS 边界，不是代码边界）。所以这里不预测，跑完直接实测，超了就冻结。
@@ -997,12 +1069,18 @@ async function route(req, res) {
         });
       }
 
-      const running = LIVE_BY_SCOPE.get(scope);
-      if (running && running.alive) {
+      /* 占用检查：同一把锁上只能有一个 run。
+         锁在磁盘上，所以「另一个进程正在跑」也看得见——这是多实例的前提。 */
+      const device = deviceOf(job.device || b.device);
+      const lockKey = runLockKey(scope, device);
+      const holder = lockConflict(scope, device);
+      if (holder) {
         return send(res, 409, {
           ok: false, code: 'busy',
-          error: '这个工作区已经有一个任务在跑了，等它结束或先停掉它',
-          runId: running.id
+          error: device
+            ? '这台设备已经有一个任务在跑了，等它结束或先停掉它'
+            : '这个工作区已经有一个任务在跑了，等它结束或先停掉它',
+          runId: holder
         });
       }
 
@@ -1032,6 +1110,39 @@ async function route(req, res) {
       /* 运行中的额度监控要能掐掉 run，而 run 是 startRun 的返回值——
          用一个让回调能看到的变量，比给 startRun 加一个「反向依赖」干净。 */
       let liveRun = null;
+
+      /* 先占锁再起任务：检查与占用之间有空隙，两个请求同时进来就会都通过检查。
+         acquireLock 是事务里的「查+写」，这才是真正的判据；上面那次查询只为了让
+         最常见的「明明在跑」直接返回，不必走到启动逻辑。 */
+      const lock = state.acquireLock(lockKey, runId);
+      if (!lock.ok) {
+        return send(res, 409, {
+          ok: false, code: 'busy',
+          error: '这个工作区已经有一个任务在跑了，等它结束或先停掉它',
+          runId: lock.holder || ''
+        });
+      }
+      /* 拿到自己的锁之后再看一眼另一把：检查和占用之间有一小段空隙，
+         正好有老客户端在这时插进来，就会出现「三个任务同时跑」。
+         顺手把刚拿到的锁还回去，比留一个说不清的状态干净。 */
+      if (device && state.lockHolder(`run:${scope}`)) {
+        state.releaseLock(lockKey, runId);
+        return send(res, 409, {
+          ok: false, code: 'busy',
+          error: '这个账号已经有一个任务在跑了（另一台设备或旧版页面），等它结束再试',
+          runId: state.lockHolder(`run:${scope}`) || ''
+        });
+      }
+
+      /* 先落「开跑」记录，再启动任务。
+         顺序反过来的话有个很窄但真实的竞态：任务可能在我写这条记录之前就结束了
+         （起手就报错的那种），onEnd 更新不到任何行，随后 runBegin 又插进一条
+         status=running —— 那条记录会一直挂着，界面上是一个永远不动的任务。 */
+      state.runBegin({
+        id: runId, scope, uid: (currentAuth() && currentAuth().uid) || scope,
+        title: String(task.goal || '').slice(0, 200), device, model: job.model || ''
+      });
+
       try {
         run = startRun({
           id: runId, scope, uid: (currentAuth() && currentAuth().uid) || scope,
@@ -1040,6 +1151,16 @@ async function route(req, res) {
           followUp: job.followUp || '', followUpImages: job.followUpImages || [],
           base, sharecode: sc, internal: INTERNAL,
           token, accessKey: cloudKey(), endpoint: cloudEndpoint(), tools: job.tools || [],
+          /* 任务收尾（正常结束 / 报错 / 被中止）都要落到状态层。
+             这里是唯一能保证「一定会被调用」的地方——放在 HTTP 处理里不行，
+             用户关掉页面时那个请求早就断了。 */
+          onEnd: ({ status, reason }) => {
+            try {
+              state.runEnd(runId, { status, reason });
+              state.releaseLock(lockKey, runId);
+              state.releaseLeases(runId);
+            } catch { /* 收尾失败不影响已经结束的任务 */ }
+          },
           /* 每一轮模型调用的用量都回到这里。三个约束：
              ① 不许抛错——记账失败不能把任务弄死；
              ② 只在撞线时中止，不到线不打断（不然用户会觉得「跑到一半莫名其妙停了」）；
@@ -1066,15 +1187,12 @@ async function route(req, res) {
         });
         liveRun = run;
       } catch (e) {
+        state.runEnd(runId, { status: 'failed', reason: `起不来：${e.message}` });
+        state.releaseLock(lockKey, runId);
         return send(res, 500, { ok: false, error: `起不来：${e.message}` });
       }
 
       RUNS.set(runId, run);
-      LIVE_BY_SCOPE.set(scope, run);
-      (async () => {
-        while (run.alive) await new Promise(r => setTimeout(r, 500));
-        if (LIVE_BY_SCOPE.get(scope) === run) LIVE_BY_SCOPE.delete(scope);
-      })();
 
       toolAudit({
         scope, name: 'run.start', args: { runId, model: job.model || '' }, custom: null,
@@ -1092,7 +1210,7 @@ async function route(req, res) {
       const rest = u.pathname.slice('/api/run/'.length).split('/');
       const runId = decodeURIComponent(rest[0] || '');
       const run = RUNS.get(runId);
-      if (!run) return send(res, 404, { ok: false, error: '这个任务在服务端已经结束了' });
+      if (!run) return goneRun(res, runId);
       /* 事件流里有完整对话和工具输出。以前只凭 runId 就能订阅，
          而 runId 就是任务 id，猜起来并不难。现在必须是这个工作区的主人。 */
       if (!ownsRun(run)) {
@@ -1195,6 +1313,25 @@ async function route(req, res) {
       if (ALERTS_KEY && keyEq(key, ALERTS_KEY)) return true;
       const a = currentAuth();
       return !!(a && a.uid && isAdmin(a.uid));
+    }
+
+    /* ── 我最近跑过什么 ──
+       存在的理由是多设备：同一账号在两台设备上，各自要知道「另一边是不是在跑」。
+       以前这事靠内存里的一个 Map，重启后就答不上来了（只能答「不知道」）。 */
+    if (u.pathname === '/api/runs' && req.method === 'GET') {
+      const scope = scopeKey('');
+      if (!SCOPE_RE.test(scope)) return send(res, 400, { ok: false, error: '工作区标识不合法' });
+      const limit = Math.min(20, Math.max(1, Number(u.searchParams.get('limit')) || 8));
+      const rows = state.runRecent(scope, limit).map(r => ({
+        id: r.id, title: r.title || '', device: r.device || '', status: r.status,
+        reason: r.reason || '', startedAt: r.startedAt, endedAt: r.endedAt || 0
+      }));
+      /* 正在跑的那条附上「锁在谁手里」——多设备时前端靠它判断能不能再起一个 */
+      const live = rows.filter(r => r.status === 'running');
+      return send(res, 200, {
+        ok: true, scope, runs: rows, running: live.length,
+        state: state.modeOf()
+      });
     }
 
     /* ── 额度：自己的 token 与磁盘 ──

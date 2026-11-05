@@ -204,7 +204,12 @@ async function main() {
     ok('/api/run 存在', /u\.pathname === '\/api\/run' && req\.method === 'POST'/.test(serverSrc));
     ok('权限取 .perms（不是包装对象）', /effectivePerms\(scope, settings\.permissions\)\.perms/.test(serverSrc));
     ok('步数参数两种写法都收', /settings\.maxSteps == null/.test(serverSrc) && /max_steps/.test(serverSrc));
-    ok('同工作区只允许一个执行', /LIVE_BY_SCOPE\.get\(scope\)/.test(serverSrc) && /code: 'busy'/.test(serverSrc));
+    /* 判据从「内存里有没有对应 Run」换成了「锁在谁手里」——锁在磁盘上，
+       所以这条检查也顺带盯着「多进程场景下占用可见」这件事没被改回去。 */
+    ok('同工作区只允许一个执行', /state\.acquireLock\(lockKey, runId\)/.test(serverSrc) && /code: 'busy'/.test(serverSrc));
+    ok('占用锁按设备粒度（同账号多端可并发）', /runLockKey\(scope, device\)/.test(serverSrc)
+      && /run:\$\{scope\}:\$\{device\}/.test(serverSrc));
+    ok('任务收尾落状态层', /onEnd: \(\{ status, reason \}\)/.test(serverSrc) && /state\.runEnd\(runId/.test(serverSrc));
     ok('断开连接不中止任务', !/res\.on\('close',\s*\(\)\s*=>\s*run\.abort/.test(serverSrc));
     ok('有停止端点', /endsWith\('\/stop'\)/.test(serverSrc) && /run\.abort\('用户停止'\)/.test(serverSrc));
     ok('有插话与审批端点', /\/inject/.test(serverSrc) && /\/approve/.test(serverSrc));
