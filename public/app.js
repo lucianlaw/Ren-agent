@@ -1112,16 +1112,23 @@ async function enterApp() {
     }
     if (autoId) {
       const t = state.tasks.find(x => x.id === autoId);
-      /* 云端还写成 done 但这一轮确实被打断了：改成「已中断」，别让它看着像做完了 */
-      if (t && (markOnly === autoId || t.status === 'running')) {
+      /* 这个任务可能根本还在服务端跑（刷新页面不会杀掉服务端的 run）。
+         以前这里无条件写 interrupted，等于刷新一下就把「正在跑」改成「已中断」，
+         紧接着又自动接回去——UI 上先闪一下中断再继续，老板的感受就是
+         「任务像中断了一下」。判据见 shouldMarkInterrupted。 */
+      const stillLive = stillRunning(t);
+      if (shouldMarkInterrupted(t, autoId, markOnly)) {
         t.status = 'interrupted';
         CLOUD.saveTask(t.id, { status: 'interrupted' }).catch(() => {});
       }
+      if (t && stillLive) t.maybeElsewhere = false;   // 就是本机刚才那个，不算「别处」
       state.resumeId = autoResumeOn() ? autoId : '';
       /* 关掉了自动续跑：至少把「可以继续」说清楚，别让人以为任务丢了 */
       if (!state.resumeId) {
         setTimeout(() => {
-          toast(`「${(t && t.title) || '上个任务'}」被刷新打断了，进度都留着，点右上角「继续跑」接着做`);
+          toast(stillLive
+            ? `「${(t && t.title) || '上个任务'}」还在服务端跑，点右上角「继续跑」就能接上现场`
+            : `「${(t && t.title) || '上个任务'}」被刷新打断了，进度都留着，点右上角「继续跑」接着做`);
         }, 900);
       }
     } else if (orphan.length) {
@@ -4681,7 +4688,7 @@ function progressHTML(o) {
       ${steps.length ? `<span class="prog-step">${stepTxt}</span>` : ''}
       <span>预计消耗 <b>${fmtCredit(Math.max(used, 0.01))} ~ ${fmtCredit(hi)}</b> 积分</span>
       <span class="prog-used">已消耗 <b>${fmtCredit(used)}</b> 积分</span>
-      <span class="prog-tok">${tok.toLocaleString()} token</span>
+      <span class="prog-tok">${tok ? tok.toLocaleString() + ' token' : (end ? '0 token' : '等待首个 token')}</span>
     </div>
     ${steps.length ? `<div class="prog-steps">${steps.map((s, i) =>
       `<span class="ps ${esc(s.status || 'todo')}" title="${esc(s.text)}"><i>${s.status === 'done' ? '✓' : s.status === 'doing' ? '▶' : i + 1}</i>${esc(brief(s.text, 24))}</span>`).join('')}</div>` : ''}
@@ -4704,7 +4711,7 @@ function progressHTML(o) {
     <div class="prog-f">
       <span>预计消耗 <b>${fmtCredit(Math.max(used, 0.01))} ~ ${fmtCredit(hi)}</b> 积分</span>
       <span class="prog-used">已消耗 <b>${fmtCredit(used)}</b> 积分</span>
-      <span class="prog-tok">${tok.toLocaleString()} token</span>
+      <span class="prog-tok">${tok ? tok.toLocaleString() + ' token' : (end ? '0 token' : '等待首个 token')}</span>
     </div>
     ${steps.length ? `<div class="prog-steps">${steps.map((s, i) =>
       `<span class="ps ${esc(s.status || 'todo')}" title="${esc(s.text)}"><i>${s.status === 'done' ? '✓' : s.status === 'doing' ? '▶' : i + 1}</i>${esc(brief(s.text, 24))}</span>`).join('')}</div>` : ''}
@@ -4748,7 +4755,11 @@ function runStatusHTML(t, tr) {
      注意不能用 t.createdAt：那是任务创建时间，新一轮刚发起时会变成
      「第 3 轮 · 还没开始 已处理 20m」这种自相矛盾的显示。 */
   const firstAt = (tr.nodes || []).map(n => Number(n.at) || 0).filter(Boolean).sort((a, b) => a - b)[0] || 0;
-  const startAt = state.traceStartedAt || firstAt || 0;
+  /* 开始时间的兜底链（刷新后前两档都是空，以前就断在这里 → 秒表整块消失）：
+     本机这一轮的开始 → 服务端 run 的开始 → 第一颗工具节点落盘时间 → 本机心跳标记的 since */
+  const mark = runMark();
+  const markSince = (mark && mark.id === t.id && Number(mark.since)) || 0;
+  const startAt = state.traceStartedAt || Number(SRV.startedAt) || firstAt || markSince || 0;
   const busyDoing = !!(tr.writing || (tr.nodes || []).some(n => n.ok === undefined)
     || steps.some(s => s.status === 'doing'));
   const allDone = steps.length > 0 && steps.every(s => s.status === 'done');
@@ -4802,7 +4813,16 @@ function doingTextOf(tr, t, curR) {
     const cur = todo[idx] || {};
     return `第 ${idx + 1}/${todo.length} 步：${brief(String(cur.text || ''), 34)}`;
   }
-  if (!(tr.nodes || []).length) return '正在拆解任务：先想清楚要做什么、分几步做…';
+  if (!(tr.nodes || []).length) {
+    /* 一句「正在拆解任务」挂十几秒，和卡死长得一样。按静默时长说实话：
+       推理模型头一段本来就要几十秒，先把「在等什么、等了多久」讲清楚。 */
+    const t0 = Number(state.traceStartedAt) || Number(SRV.startedAt) || 0;
+    const secs = t0 ? Math.max(0, Math.round((Date.now() - t0) / 1000)) : 0;
+    if (secs >= 90) return `已经 ${secs}s 没有第一个字：可能卡住了，建议点 ■ 停掉重发（或换一个更快的模型）`;
+    if (secs >= 25) return `模型还在想第一段（${secs}s）。推理模型开头慢是常态，再等等`;
+    if (secs >= 8) return `已发给模型，等它吐第一个字（${secs}s）…`;
+    return '正在拆解任务：先想清楚要做什么、分几步做…';
+  }
   return '正在接着往下做…';
 }
 
@@ -4839,6 +4859,18 @@ setInterval(() => {
     }
     const bar = el.querySelector('.prog-bar i');
     if (bar && !end) bar.style.width = Math.round(Math.max(3, frac * 100)) + '%';
+    /* 空窗期（还没有任何步骤 / 推理 / 正文）第二行也跟着秒数走：
+       「正在拆解任务」一句挂半分钟，和卡死没有区别。有动静之后就让位给真实动作 */
+    const ps = el.querySelector('.ps-txt');
+    if (ps && el.classList.contains('merged') && !end && state.running) {
+      const tr2 = state.trace || {};
+      const blank = !(tr2.nodes || []).length
+        && !String(tr2.think || '').trim() && !String(tr2.stream || '').trim();
+      if (blank) {
+        const txt = doingTextOf(tr2, curTask(), Number(tr2.round) || 1);
+        if (txt && txt !== ps.textContent) ps.textContent = txt;
+      }
+    }
   });
 }, 1000);
 
@@ -5126,7 +5158,12 @@ function syncRounds(t) {
 
 function roundsList(t, n) {
   const steps = Array.isArray(t && t.steps) ? t.steps : [];
-  const ums = Array.isArray(t && t.userMsgs) ? t.userMsgs : [];
+  const ums0 = Array.isArray(t && t.userMsgs) ? t.userMsgs : [];
+  /* 老任务 / 刚建好就刷新过的任务：云端 user_msgs 是空的，但 goal 就是第一句原话。
+     不回退这一档，界面上第一轮就没有「我」的气泡——话还在，看着像被吞了。 */
+  const ums = (ums0.length || !t || !String(t.goal || '').trim())
+    ? ums0
+    : [{ text: String(t.goal).trim(), round: 1 }];
   const list = [];
   for (let r = 1; r <= n; r++) {
     const tools = steps.filter(s => s && s.kind === 'tool' && (Number(s.round) || 1) === r);
@@ -5572,6 +5609,9 @@ function renderTrace(noScroll) {
   html += `</div>`;
 
   box.innerHTML = html;
+  /* 刷新接回来的任务不会再收到一次 start 事件，秒表得在这里重新挂上；
+     不挂的话「已 27s」直接变成空白——老板看到的就是「时间也不展示了」。 */
+  if (running) startLiveTick(); else stopLiveTick();
   box.querySelectorAll('.ask-opt').forEach(el => {
     el.onclick = () => {
       const opts = el.closest('.ask-opts');
@@ -5769,11 +5809,18 @@ function freshMark(j, ms) {
   if (!j || !j.id) return false;
   return Date.now() - Number(j.at || 0) < (ms || RESUME_MAX_AGE);
 }
-function markRunning(task) {
+function markRunning(task, opts) {
   try {
+    /* at 是「最后一次心跳」（每 20 秒往后推），since 才是「这一轮什么时候开始的」。
+       两者不能混用：拿 at 当开始时间，刷新后算出来的耗时会一次次被打回 0；
+       而刷新后云端只留 updated_at（也是心跳），没有 since 就再也算不出真实耗时。
+       keepSince 只给「断点续跑」用：续的是同一轮，开始时间当然还是原来那一刻。 */
+    const old = runMark();
+    const same = old && old.id === task.id && old.since;
+    const since = (same && (opts && opts.keepSince)) ? old.since : Date.now();
     localStorage.setItem(RUNNING_KEY, JSON.stringify({
       id: task.id, title: task.title || '', goal: task.goal || '',
-      emp: task.employeeName || '', at: Date.now(), tid: tabId()
+      emp: task.employeeName || '', at: Date.now(), since, tid: tabId()
     }));
   } catch (e) { /* 隐私模式写不了，退化成原来的手动续跑 */ }
 }
@@ -5863,6 +5910,23 @@ function claimResume(tasks) {
   return { orphans, autoId, markOnly };
 }
 
+/* 刷新回来后这个任务还算不算「还在跑」。
+   判据是心跳（云端 updated_at，20 秒一拍）：新鲜的说明服务端那边还握着，
+   不能因为「我刷新了」就把状态改写成 interrupted——那会让界面先闪一下中断，
+   紧接着又自动接回去，老板的感受就是「任务像中断了一下」。 */
+function stillRunning(t) {
+  const beat = t ? (t.updatedAt || 0) : 0;
+  return !!(t && (window.STATES
+    ? STATES.heartbeatFresh(beat)
+    : (Date.now() - Number(beat || 0) < 90000)));
+}
+/* 该不该把它标成「已中断」：只有心跳过期、而且确实是本机刚才在跑的那个才标 */
+function shouldMarkInterrupted(t, autoId, markOnly) {
+  if (!t) return false;
+  if (stillRunning(t)) return false;
+  return markOnly === autoId || t.status === 'running';
+}
+
 /* 进来之后把断点任务接上：等模型通道就绪，然后走和「继续跑」完全一样的路径 */
 async function autoResumeTask() {
   const id = state.resumeId;
@@ -5879,7 +5943,12 @@ async function autoResumeTask() {
     return;
   }
   selectTask(id);
-  toast(`「${t.title || '上一个任务'}」被刷新打断，已自动接着跑`);
+  /* 说清楚是「接着原来的现场」还是「重新开跑」：两种情况界面上都是继续，
+     但对老板意味着不同的事（一个还在跑、一个真的断过一次）。 */
+  const live = stillRunning(t);
+  toast(live
+    ? `「${t.title || '上一个任务'}」还在跑，已接上现场`
+    : `「${t.title || '上一个任务'}」被刷新打断，已自动接着跑`);
   runGoal('', id);
 }
 
@@ -5894,7 +5963,7 @@ async function autoResumeTask() {
  * 关键点是「事件没有变」。applyEvent 只认事件对象，从来不管事件从哪来，
  * 所以这层换掉之后，轨迹渲染、落库、计费、告警一行都不用改。
  */
-const SRV = { runId: '', seq: 0, on: false };
+const SRV = { runId: '', seq: 0, on: false, startedAt: 0 };
 
 /* 一次 POST 把动作转回服务端。失败不抛——这些动作都是「尽力」，
    抛出去会打断调用处正在做的事（比如插话失败不该让输入框卡住）。 */
@@ -5965,6 +6034,15 @@ async function consumeRunStream(res, emitFn, signal, reconnecting = false) {
         let ev;
         try { ev = JSON.parse(datas.join('\n')); } catch (e) { continue; }  /* 坏帧丢掉，别整条流废掉 */
         if (seq) SRV.seq = seq;
+        /* hello 帧（没有 t 字段）：服务端告诉我们这条 run 什么时候开的。
+           接上现场时用它把秒表接到原来的时间轴上，而不是从 0 重数。 */
+        if (ev && ev.runId && ev.t === undefined) {
+          if (Number(ev.startedAt)) {
+            SRV.startedAt = Number(ev.startedAt);
+            if (!state.traceStartedAt) state.traceStartedAt = Number(ev.startedAt);
+          }
+          continue;
+        }
         if (ev.t === 'end') { ended = true; continue; }
         if (emitFn) emitFn(ev);
         if (ev.t === 'done' || ev.t === 'error') ended = true;
@@ -6080,6 +6158,7 @@ async function agentRun(job) {
   SRV.on = true;
   SRV.runId = String(job.task.id || '');
   SRV.seq = 0;
+  SRV.startedAt = Number(state.traceStartedAt) || 0;
   const ended = await consumeRunStream(r, job.emit, job.signal);
   if (ended) { SRV.on = false; return true; }
   /* 流断了：任务还在服务端。接着上一次的 seq 自己接回去。 */
@@ -6304,6 +6383,10 @@ async function runGoal(goal, existingTaskId) {
       id: newId(),
       title: guessTitle(text),
       goal: text,
+      /* 第一句原话必须当场进存档：以前只在跑完的 finally 里落库，
+         「正在分析」时刷新 → 云端 user_msgs 还是空的 → 回来就只剩一个空壳，
+         老板看到的正是「我发的文字不展示了」。 */
+      userMsgs: [{ text, at: 0, round: 1 }],
       files: atts,
       deliverables: parseDeliverables($('#deliverables').value),
       employeeId: staff.id, employeeName: staff.name, employeeRole: staff.role,
@@ -6332,9 +6415,11 @@ async function runGoal(goal, existingTaskId) {
   }
 
   state.running = true;
-  state.traceStartedAt = Date.now();
+  /* 续跑时用本机标记里的原始开始时间：刷新前后「已跑了多久」应该是连续的，
+     从 0 重新数会让人以为任务刚被重启过（这正是「感觉像中断了一下」的来源之一）。 */
+  state.traceStartedAt = resume ? (Number((ownRunMark() || {}).since) || Date.now()) : Date.now();
   /* 先在本机打标：这一轮要是被刷新/关标签打断，重新进来靠它认领这个任务 */
-  markRunning(task);
+  markRunning(task, { keepSince: !!resume });
   startRunHeart(task);
   /* 再把「这一轮已经开始」落一次库。原来只在 finally 里存，导致多轮里
      「正在分析」时刷新 → 云端还停在上一次的 done → 重进页面这一轮整段消失，
@@ -7017,8 +7102,12 @@ function startLiveTick() {
   stopLiveTick();
   liveTickTimer = setInterval(() => {
     const el = $('#liveTick');
-    if (!el || !state.trace.startedAt) return stopLiveTick();
-    el.textContent = '已 ' + Math.max(0, Math.round((Date.now() - state.trace.startedAt) / 1000)) + 's';
+    if (!el) return stopLiveTick();
+    /* 开始时间走同一个兜底链：刷新接回来时 trace.startedAt 是空的，
+       只认它的话秒表第一拍就把自己停掉，界面上就是「时间不展示了」。 */
+    const t0 = Number(state.traceStartedAt) || Number(state.trace && state.trace.startedAt) || 0;
+    if (!t0) return stopLiveTick();
+    el.textContent = '已 ' + Math.max(0, Math.round((Date.now() - t0) / 1000)) + 's';
   }, 1000);
 }
 function stopLiveTick() {
@@ -8260,6 +8349,8 @@ window.APP = {
   markRunning, clearRunningMark, autoResumeOn, pendingResumeId, autoResumeTask,
   claimResume, markedTaskId, runMark, tabId, persistRoundStart,
   startRunHeart, stopRunHeart, freshMark, ownRunMark, runGoal,
+  /* 刷新后的判活与耗时还原：给单测留的入口 */
+  stillRunning, shouldMarkInterrupted, roundsList, doingTextOf, runStatusHTML, SRV,
   /* 产出过滤 + 额度：给单测和联调留的入口 */
   isInternalArtifact, budgetOf, spentOf, ensureBudget, fmtTokenW, queueAlert, queueTaskAlert,
   /* 设置里的额度夹取：任务与项目两套数共用一套规则 */

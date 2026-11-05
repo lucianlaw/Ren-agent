@@ -197,7 +197,11 @@ async function streamRun(req, res, run, from) {
   res.on('close', stop);
 
   try {
-    res.write(`event: hello\ndata: ${JSON.stringify({ runId: run.id, from, alive: run.alive })}\n\n`);
+    /* hello 里带上服务端的开跑时间：刷新 / 换设备接上现场时，界面上
+       「已跑了多久」要靠它，否则秒表只能从 0 重新数，看着像任务刚重启 */
+    res.write(`event: hello\ndata: ${JSON.stringify({
+      runId: run.id, from, alive: run.alive, startedAt: run.startedAt || 0
+    })}\n\n`);
     for await (const rec of run.bus.since(from)) {
       if (closed) break;
       res.write(`id: ${rec.seq}\ndata: ${JSON.stringify(rec.ev)}\n\n`);
