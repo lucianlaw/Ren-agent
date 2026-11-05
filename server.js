@@ -612,7 +612,11 @@ async function route(req, res) {
           const b = backupStatus();
           return {
             dir: b.dir, count: b.count, keep: b.keep, hours: b.hours,
-            lastAt: b.lastAt, ageHours: b.ageHours, stale: b.stale, lastError: b.lastError
+            lastAt: b.lastAt, ageHours: b.ageHours, stale: b.stale, lastError: b.lastError,
+            /* 白名单式取值，新字段必须在这里显式放出来——
+               第一次加这两个字段时就是漏了这一步，health 里看不到，
+               排查时等于没有。 */
+            checks: b.checks, lastCheckAt: b.lastCheckAt
           };
         })() : undefined,
         /* 状态层：mode 是 memory 就说明这次降级了——磁盘上什么都没存。

@@ -312,6 +312,10 @@ console.log('\n[7] health 里的运维视图');
     ok('带 key 能看到配额概况', !!(h.quota && h.quota.accounts >= 1), h.quota);
     ok('带 key 能看到备份状态', !!(h.backup && h.backup.dir), h.backup);
     ok('备份目录与配置一致', h.backup.dir === BK, h.backup.dir);
+    /* 定时器有没有跑过，不能靠「目录里有包」推断——手动触发也会留下包。
+       这两个字段是专门为「分不清没到期还是没跑」加的。 */
+    ok('备份调度留下了体检记录', Number(h.backup.checks) >= 1, h.backup.checks);
+    ok('体检记录带时间', !!h.backup.lastCheckAt, h.backup.lastCheckAt);
   }
 }
 
