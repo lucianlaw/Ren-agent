@@ -6,13 +6,15 @@
  * 出了问题既回答不了「线上是哪个版本」，也没法「回滚到上一版」。更常见的是
  * 测试没跑就发了——不是有人故意，是没有任何东西会拦。
  *
- * 三道门，按「越便宜越先」排：
+ * 四道门，按「越便宜越先」排：
  *   1. 工作区必须干净 —— 否则线上跑的东西不是一个 commit，回滚无从谈起
  *   2. 部署目录不许有密钥文件 —— 上传是把整个目录压包，密钥会跟着走
  *   3. 全量测试必须通过 —— 这才是真正的闸门，不是我记得跑
+ *   4. 产物冒烟 —— 把将要上传的那一份单独跑起来（平台上没有第二个应用可建，
+ *      「先验后发」只能退化成这一步，见 scripts/stage.mjs 的说明）
  *
  * 用法：
- *   node scripts/release.mjs            跑完三道门，写 build.json
+ *   node scripts/release.mjs            跑完四道门，写 build.json
  *   node scripts/release.mjs --check    只跑门，不写文件（CI / 发布前自查）
  *   node scripts/release.mjs --rollback <ref>
  *                                       把工作区切回某个 tag/commit，并提示下一步
@@ -76,7 +78,7 @@ if (ROLLBACK_AT >= 0) {
 say('发布闸门');
 say('────────────────────────────────────────');
 
-/* [1/3] 工作区干净 */
+/* [1/4] 工作区干净 */
 {
   const st = git(['status', '--porcelain']);
   const head = git(['rev-parse', '--short', 'HEAD']);
@@ -92,7 +94,7 @@ say('─────────────────────────
   pass('工作区干净', `${branch.out} @ ${head.out}`);
 }
 
-/* [2/3] 部署目录不许有密钥 */
+/* [2/4] 部署目录不许有密钥 */
 {
   /* 名单与 test/config-test.mjs 共用 lib/config.js 里那一份 */
   const allow = String(process.env.REN_ALLOW_LEGACY_SECRETS || '')
@@ -107,7 +109,7 @@ say('─────────────────────────
   pass('部署目录无密钥');
 }
 
-/* [3/3] 全量测试 */
+/* [3/4] 全量测试 */
 {
   const dir = path.join(ROOT, 'test');
   const files = fs.readdirSync(dir).filter(f => f.endsWith('.mjs')).sort();
@@ -134,6 +136,21 @@ say('─────────────────────────
     die('测试没通过', `${failed.length}/${files.length} 个文件失败`, '闸门不放行：测试不过就不该上线。');
   }
   pass('全量测试通过', `${files.length} 个文件 / ${assertions} 项断言 / ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+}
+
+/* [4/4] 产物冒烟：把「将要上传的那一份」单独跑起来
+   这一道是 staging 的替代品——平台上发布永远覆盖同一个应用（没有第二个应用可建），
+   所以「先在测试环境验」只能退化成「先把产物独立跑一遍再传」。 */
+{
+  const r = spawnSync(process.execPath, [path.join('scripts', 'stage.mjs')], {
+    cwd: ROOT, encoding: 'utf8', timeout: 120000, env: { ...process.env }
+  });
+  const out = String(r.stdout || '') + String(r.stderr || '');
+  if (r.status !== 0) {
+    console.log(out.split('\n').slice(-20).join('\n'));
+    die('产物冒烟没通过', '', '这一份产物起不来，不该发布。');
+  }
+  pass('产物冒烟通过', `${out.match(/体积：(\S+)/)?.[1] || ''}`);
 }
 
 /* 写 build.json：这是「线上是哪个版本」的唯一来源 */

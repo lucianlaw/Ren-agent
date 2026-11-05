@@ -18,3 +18,7 @@ self-token.json
 
 # 发布标记：每次发布由 scripts/release.mjs 生成，不进版本库
 build.json
+
+# 本地运行时日志
+nohup.out
+*.out
