@@ -35,6 +35,12 @@ import { toolAudit, writeAudit, readAudit } from './lib/audit.js';
 import { addAlert, listAlerts, ackAlerts, ADMIN_EMAIL, ALERTS_KEY } from './lib/alerts.js';
 import { probeRuntime, runtimeWord, hardenAll, uidForScope, runIsolated } from './lib/sandbox.js';
 import { secretStatus, secretDirInfo, secretDir } from './lib/config.js';
+import {
+  checkTokens, tokenStatus, recordTokens, checkDisk, noteDisk, diskStatus,
+  quotaReport, reconcileShell, isFrozen, freeze, thaw, setLimits, limitsOf,
+  listScopes, quickStats, usageDir, allLimitOverrides, fmtBytes
+} from './lib/quota.js';
+import { runBackup, verifyBackup, backupStatus, listBackups, scheduleBackups } from './lib/backup.js';
 import { previewOffice } from './lib/office.js';
 import { digestFiles } from './lib/digest.js';
 import { selfAuth, treeSrc, readSrc, grepSrc } from './lib/selfsrc.js';
@@ -360,7 +366,11 @@ const PUBLIC_API = new Set(['/api/health', '/api/session', '/api/auth-diag']);
    它的凭证是随机落盘的运维 key。
    不能放进 PUBLIC_API：那样闸门会连身份都不解析，登录用户在页面上查自己的告警
    会被当成匿名人 403——而「B 看不到 A 的告警」也会因为双方都是 403 而假绿。 */
-const OPTIONAL_AUTH = new Set(['/api/alerts', '/api/alerts/ack', '/api/sandbox-check']);
+const OPTIONAL_AUTH = new Set(['/api/alerts', '/api/alerts/ack', '/api/sandbox-check',
+  /* 运维接口：调用方可能是 cron（curl，没有浏览器登录态），凭证是随机落盘的运维 key。
+     放进这个集合的语义是「闸门照常验，验不过也交给 handler 自己判」，
+     不是「不需要凭证」——handler 里 adminOK 会逐条核对 key 或管理员身份。 */
+  '/api/admin/quota', '/api/admin/backup', '/api/admin/backup/verify']);
 
 
 /* ── 内部调用凭证 ──
@@ -529,6 +539,21 @@ async function route(req, res) {
            generated，说明密钥目录每次发布都丢了，签名会集体失效。 */
         secrets: withKey ? secretStatus(['authn.key', 'alerts.key', 'self.key']) : undefined,
         secretsDir: withKey ? secretDirInfo() : undefined,
+        /* 配额与备份的运维视图。这两块是「机器会不会突然出事」的直接指标：
+           磁盘还剩多少、有多少账号被冻结、上一次备份是几小时前、有没有失败。
+           公开页面上不出现——它只对拿着运维 key 的人有意义。 */
+        quota: withKey ? {
+          dir: usageDir(),
+          ...quickStats(),
+          defaults: limitsOf('0'.repeat(32))
+        } : undefined,
+        backup: withKey ? (() => {
+          const b = backupStatus();
+          return {
+            dir: b.dir, count: b.count, keep: b.keep, hours: b.hours,
+            lastAt: b.lastAt, ageHours: b.ageHours, stale: b.stale, lastError: b.lastError
+          };
+        })() : undefined,
         workspace: WORKSPACE_BASE,
         // 反代进来的实际头部，用来核对同源判定（不含任何密钥）
         seen: LOCAL_ONLY ? undefined : {
@@ -791,7 +816,24 @@ async function route(req, res) {
 
       const out = (!TOOL_CATEGORY[name] && TOOL_CATEGORY[name] !== 'none')
         ? await runHttpTool({ ...custom, name }, args)
-        : await runTool(name, args, { workspace: root, onTodos: () => {}, fullAccess: level === 'full' });
+        /* scope 一起传下去：磁盘配额要按账号查，而 workspace 只是个路径。
+           从路径反推 scope 也行，但那是「靠命名约定」，一旦 WORKSPACE_DIR 被改成
+           扁平结构就会静默失效——配额静默失效比报错难查得多。 */
+        : await runTool(name, args, { workspace: root, scope, onTodos: () => {}, fullAccess: level === 'full' });
+
+      /* shell 是唯一一条拦不住写入的路径：降权后的子进程想写什么，应用层管不着
+         （这是 OS 边界，不是代码边界）。所以这里不预测，跑完直接实测，超了就冻结。
+         冻结之后所有写入口一律拒绝——代价是用户得清理一下，不冻结的代价是
+         所有人的任务一起因为没空间失败。两害相权，选前者。 */
+      if (name === 'run_shell' && out && out.ok) {
+        const rec = reconcileShell(scope);
+        if (!rec.ok) {
+          out.ok = false;
+          out.output = `${String(out.output || '')}\n\n⚠ 磁盘配额：执行完后实测 `
+            + `${fmtBytes(rec.used)}，超过上限 ${fmtBytes(rec.limit)}，写入已冻结。`
+            + '先删掉一些文件（再调一次 /api/quota/thaw，或让管理员解冻）才能继续写。';
+        }
+      }
       let verify = verifyStep(name, args, out, root);
 
       /* ── 改完自动跑测试 ──
@@ -939,6 +981,22 @@ async function route(req, res) {
         });
       }
 
+      /* ── 账号级额度闸（发起前） ──
+         单任务预算（settings.maxTokens）只管「这一次任务」，账号一天跑十个任务就能绕过去。
+         这里看的是这个账号今天/这月累计用了多少。402 而不是 429：429 是「你太快了，等等再来」，
+         402 是「你的额度用完了」——用户看到的分辨率不同，下一步动作也不同。 */
+      const qc = checkTokens(scope);
+      if (!qc.ok) {
+        toolAudit({
+          scope, name: 'quota.block', args: { where: qc.where || '' }, custom: null,
+          category: 'none', level: 'default', ok: false, blocked: true, ms: 0,
+          output: qc.error, verify: { pass: false, why: '账号额度用尽' }, ...clientMeta(req)
+        });
+        return send(res, 402, {
+          ok: false, code: qc.code, where: qc.where || '', error: qc.error, quota: qc.status
+        });
+      }
+
       const running = LIVE_BY_SCOPE.get(scope);
       if (running && running.alive) {
         return send(res, 409, {
@@ -971,6 +1029,9 @@ async function route(req, res) {
       const sc = u.searchParams.get('sharecode') || '';
 
       let run;
+      /* 运行中的额度监控要能掐掉 run，而 run 是 startRun 的返回值——
+         用一个让回调能看到的变量，比给 startRun 加一个「反向依赖」干净。 */
+      let liveRun = null;
       try {
         run = startRun({
           id: runId, scope, uid: (currentAuth() && currentAuth().uid) || scope,
@@ -978,8 +1039,32 @@ async function route(req, res) {
           model: job.model || '', judge: job.judge || null,
           followUp: job.followUp || '', followUpImages: job.followUpImages || [],
           base, sharecode: sc, internal: INTERNAL,
-          token, accessKey: cloudKey(), endpoint: cloudEndpoint(), tools: job.tools || []
+          token, accessKey: cloudKey(), endpoint: cloudEndpoint(), tools: job.tools || [],
+          /* 每一轮模型调用的用量都回到这里。三个约束：
+             ① 不许抛错——记账失败不能把任务弄死；
+             ② 只在撞线时中止，不到线不打断（不然用户会觉得「跑到一半莫名其妙停了」）；
+             ③ 中止要留一句人话在事件流里，否则前端只看到 status=stopped。 */
+          onUsage: (u) => {
+            try {
+              const r = recordTokens(scope, u || {});
+              if (!r.exceeded) return;
+              const why = r.exceeded === 'day'
+                ? `今天的 token 额度用完了（${r.day.used}/${r.day.limit}）`
+                : `这个月的 token 额度用完了（${r.month.used}/${r.month.limit}）`;
+              if (liveRun) {
+                liveRun.quotaStopped = why;
+                liveRun.bus.push({ t: 'error', message: `账号额度：${why}，任务已停止。额度重置后可以继续。` });
+                liveRun.abort(`账号额度：${why}`);
+              }
+              toolAudit({
+                scope, name: 'quota.exceeded', args: { where: r.exceeded }, custom: null,
+                category: 'none', level: 'default', ok: false, blocked: true, ms: 0,
+                output: why, verify: { pass: false, why }, ...clientMeta(req)
+              });
+            } catch { /* 记账出错不影响任务本身 */ }
+          }
         });
+        liveRun = run;
       } catch (e) {
         return send(res, 500, { ok: false, error: `起不来：${e.message}` });
       }
@@ -1089,6 +1174,137 @@ async function route(req, res) {
       const rec = addAlert({ ...a, scope: scopeKey(a.scope || b.scope || '') });
       return send(res, 200, { ok: true, id: rec ? rec.id : '', to: ADMIN_EMAIL, accepted: !!rec });
     }
+    /* ── 运维接口的鉴权 ──
+       三条不同的来路，缺一不可：
+         · 进程内自调用（服务端自己打自己）
+         · 运维 key（cron / curl，没有浏览器登录态）
+         · 管理员账号（人，登着录进来的）
+       注意 key 的比较用的是 CONSTANT_TIME 式的前置判断：长度不一致就直接 false，
+       不做逐字节短路——虽然这把 key 是随机 32 字节、爆破不现实，但「比较密钥」
+       这件事写成按位比对是一种义务，不是可选的优化。 */
+    function keyEq(a, b) {
+      const x = String(a || ''); const y = String(b || '');
+      if (!x || !y || x.length !== y.length) return false;
+      let d = 0;
+      for (let i = 0; i < x.length; i++) d |= x.charCodeAt(i) ^ y.charCodeAt(i);
+      return d === 0;
+    }
+    function adminOK(req, u) {
+      if (isInternal(req)) return true;
+      const key = String(u.searchParams.get('key') || req.headers['x-ren-admin'] || '');
+      if (ALERTS_KEY && keyEq(key, ALERTS_KEY)) return true;
+      const a = currentAuth();
+      return !!(a && a.uid && isAdmin(a.uid));
+    }
+
+    /* ── 额度：自己的 token 与磁盘 ──
+       scope 一律由闸门给，参数里的 scope 不起作用——这条和所有其它接口一致。 */
+    if (u.pathname === '/api/quota' && req.method === 'GET') {
+      const scope = scopeKey(u.searchParams.get('scope'));
+      if (!SCOPE_RE.test(scope)) return send(res, 400, { ok: false, error: '工作区标识不合法' });
+      const rep = quotaReport(scope);
+      const t = rep.tokens || {};
+      const d = rep.disk || {};
+      return send(res, 200, {
+        ok: true, scope,
+        tokens: t, disk: d, limits: rep.limits,
+        /* 一句人话：前端不用拿两个数自己算「还能不能干活」 */
+        summary: d.frozen
+          ? `写入已冻结：${d.frozenReason || '磁盘超限'}`
+          : (t.day && t.day.remaining > 0
+            ? `今天还剩 ${t.day.remaining} token，磁盘 ${fmtBytes(d.used)} / ${fmtBytes(d.limit)}`
+            : `今天的 token 额度已用完，明天零点重置`)
+      });
+    }
+
+    /* 自己解冻：清理完文件之后不该还要等管理员。
+       但不能凭一句「我删了」就解——服务端实测，并且要降到 80% 以下才放行，
+       否则刚贴着上限解冻、下一次上传立刻又冻，用户会在两个状态之间反复撞墙。 */
+    if (u.pathname === '/api/quota/thaw' && req.method === 'POST') {
+      const scope = scopeKey('');
+      if (!SCOPE_RE.test(scope)) return send(res, 400, { ok: false, error: '工作区标识不合法' });
+      const lim = limitsOf(scope);
+      const d = diskStatus(scope, { fresh: true });
+      if (!d.ok) return send(res, 400, { ok: false, error: d.error });
+      const target = Math.floor(lim.diskBytes * 0.8);
+      if (d.used > target) {
+        return send(res, 409, {
+          ok: false, code: 'still_full',
+          error: `现在还有 ${fmtBytes(d.used)}，要先降到 ${fmtBytes(target)} 以下才能解冻（上限的 80%）。`,
+          disk: d
+        });
+      }
+      const r = thaw(scope);
+      toolAudit({
+        scope, name: 'quota.thaw', args: { used: d.used }, custom: null,
+        category: 'none', level: 'default', ok: !!r.ok, blocked: false, ms: 0,
+        output: `实测 ${fmtBytes(d.used)}，低于阈值，解冻`, verify: { pass: !!r.ok }, ...clientMeta(req)
+      });
+      return send(res, 200, { ok: r.ok, disk: diskStatus(scope, { fresh: true }) });
+    }
+
+    /* ── 运维：所有账号的额度 ── */
+    if (u.pathname === '/api/admin/quota' && req.method === 'GET') {
+      if (!adminOK(req, u)) return send(res, 403, { ok: false, error: 'key 不对或不是管理员' });
+      const probe = '0'.repeat(32);
+      return send(res, 200, {
+        ok: true,
+        scopes: listScopes(),
+        overrides: allLimitOverrides(),
+        defaults: limitsOf(probe),
+        dir: usageDir()
+      });
+    }
+    if (u.pathname === '/api/admin/quota' && req.method === 'POST') {
+      if (!adminOK(req, u)) return send(res, 403, { ok: false, error: 'key 不对或不是管理员' });
+      const b = await readBody(req, 64 * 1024);
+      const target = String(b.scope || '');
+      if (!SCOPE_RE.test(target)) return send(res, 400, { ok: false, error: '工作区标识不合法' });
+      let lim = null;
+      if (b.tokenDaily !== undefined || b.tokenMonthly !== undefined || b.diskMb !== undefined) {
+        const r = setLimits(target, { tokenDaily: b.tokenDaily, tokenMonthly: b.tokenMonthly, diskMb: b.diskMb });
+        if (!r.ok) return send(res, 400, r);
+        lim = r.limits;
+      }
+      let unfrozen = null;
+      if (b.unfreeze) unfrozen = thaw(target);
+      toolAudit({
+        scope: target, name: 'admin.quota', args: { lim: !!lim, unfreeze: !!b.unfreeze }, custom: null,
+        category: 'none', level: 'default', ok: true, blocked: false, ms: 0,
+        output: `管理员调整额度${lim ? '：' + JSON.stringify(lim) : ''}${unfrozen ? '，并解冻写入' : ''}`,
+        verify: { pass: true }, ...clientMeta(req)
+      });
+      return send(res, 200, { ok: true, limits: lim || limitsOf(target), quota: quotaReport(target) });
+    }
+
+    /* ── 运维：备份 ──
+       注意这里**不提供** includeSecrets。把密钥打进包是可以的，但只能由人在机器上敲
+       `node scripts/backup.mjs --keys` —— 一个 HTTP 请求不该有「把签名密钥导出成文件」的能力，
+       哪怕调用者拿着运维 key（key 会泄漏，命令行不会）。 */
+    if (u.pathname === '/api/admin/backup' && req.method === 'GET') {
+      if (!adminOK(req, u)) return send(res, 403, { ok: false, error: 'key 不对或不是管理员' });
+      return send(res, 200, { ok: true, ...backupStatus() });
+    }
+    if (u.pathname === '/api/admin/backup' && req.method === 'POST') {
+      if (!adminOK(req, u)) return send(res, 403, { ok: false, error: 'key 不对或不是管理员' });
+      if (!internal && !rateOK(req)) return send(res, 429, { ok: false, error: '调用太频繁，缓一下' });
+      const r = await runBackup({ reason: 'api', includeSecrets: false, build: BUILD });
+      writeAudit({
+        kind: 'backup', scope: '', action: '手动备份', target: r.file || '',
+        ok: !!r.ok, blocked: false, output: r.ok ? `${r.files} 个文件 ${fmtBytes(r.bytes)}` : r.error,
+        ...clientMeta(req)
+      });
+      return send(res, r.ok ? 200 : 500, { ...r, status: backupStatus() });
+    }
+    if (u.pathname === '/api/admin/backup/verify' && req.method === 'POST') {
+      if (!adminOK(req, u)) return send(res, 403, { ok: false, error: 'key 不对或不是管理员' });
+      const b = await readBody(req, 64 * 1024);
+      const file = String(b.file || '') || (listBackups()[0] || {}).file || '';
+      if (!file) return send(res, 400, { ok: false, error: '没有任何备份可校验' });
+      const r = verifyBackup(file);
+      return send(res, r.ok ? 200 : 409, { ...r, file });
+    }
+
     /* 沙箱自检：不靠「配置看起来对了」，而是用降权后的身份去读它**不该**读到的东西。
        三次真实尝试：自己的 uid 是多少、能不能读运维密钥、能不能列别人的目录。
        只有运维 key 能调——它返回 uid 和路径错误原文。 */
@@ -1227,6 +1443,15 @@ async function route(req, res) {
       if (buf.length > UPLOAD_MAX) {
         return send(res, 413, { ok: false, error: `文件太大（${(buf.length / 1048576).toFixed(1)}MB），单个上限 24MB` });
       }
+      /* 磁盘配额：上传是唯一一条「一次就能灌进 24MB」的入口，必须在**写之前**查。
+         写完再查等于「先让你写爆，再告诉你超了」，那时候别人的任务已经因为没空间失败了。
+         状态码分开：507 = 空间不够，423 = 写入被冻结（原因不同，用户要做的事也不同）。 */
+      const room = checkDisk(scope, buf.length);
+      if (!room.ok) {
+        return send(res, room.code === 'disk_frozen' ? 423 : 507, {
+          ok: false, code: room.code, error: room.error, quota: diskStatus(scope)
+        });
+      }
       const root = ensureScope(scope);
       const day = new Date().toISOString().slice(0, 10);
       const base = path.basename(rawName).replace(/\.[^.]+$/, '')
@@ -1237,6 +1462,7 @@ async function route(req, res) {
       let n = 1;
       while (fs.existsSync(path.join(root, rel))) rel = `${dirRel}/${base}(${++n})${ext}`;
       fs.writeFileSync(path.join(root, rel), buf);
+      noteDisk(scope, buf.length);
       return send(res, 200, {
         ok: true, path: rel, size: buf.length,
         kind: ext.replace('.', ''), mime: MIME[ext] || 'application/octet-stream'
@@ -1554,6 +1780,12 @@ if (RT.mode === 'uid-split') {
   SANDBOX.hardened = r.done || 0;
 }
 
+/* ── 备份调度 ──
+   为什么需要「启动就开始跑」而不是等运维想起：这个应用此前一份备份都没有过。
+   一个靠人记得住的机制，在忙起来的第一周就会失效。
+   第一次检查推迟 90 秒，避开冷启动的 IO 高峰。 */
+const BACKUP_PLAN = scheduleBackups({ build: BUILD });
+
 server.listen(PORT, BIND, () => {
   console.log('');
   console.log('  Ren Agent · 工具执行器 + 执行循环 v0.4 已启动');
@@ -1580,6 +1812,19 @@ server.listen(PORT, BIND, () => {
       : '未标记（本地直接运行，不是一次发布）'));
   }
   console.log('  数据：  云数据库（员工 / 任务 / 设置按登录账号隔离）');
+  /* 备份和配额这两行也要在启动日志里出现：
+     它们都是「平时看不见、出事才知道有没有」的东西。日志里没有，就等于没有。 */
+  {
+    const b = backupStatus();
+    console.log('  备份：  ' + b.dir + `（${b.count} 份，每 ${b.hours} 小时一份，留 ${b.keep} 份）`
+      + (b.stale ? ' ⚠ 上次备份已经超过计划间隔' : ''));
+  }
+  {
+    const lim = limitsOf('0'.repeat(32));
+    console.log('  配额：  每账号每天 ' + lim.tokenDaily.toLocaleString('en-US') + ' token、'
+      + '每月 ' + lim.tokenMonthly.toLocaleString('en-US') + ' token、磁盘 ' + fmtBytes(lim.diskBytes)
+      + `（用量在 ${usageDir()}）`);
+  }
   /* 预编译前端那 7 个脚本：第一个任务不用再等 40ms 编译，也顺手验证壳能装起来。
      装不起来就别等到用户点执行才报错——启动时就要喊出来。 */
   try {

@@ -222,9 +222,61 @@ node scripts/release.mjs --check             # 确认这版是好的
 已知边界（别对外说成「已经隔离」）：
 
 - 状态（进行中的任务、锁、限流桶）在进程内存里，重启即失，且只支持单进程。
-- 没有按账号的磁盘/CPU 配额，一个人写满盘会影响所有人。
-- `run_shell` 是黑名单 + 路径形态检查，不是容器。能挡住顺手越界，挡不住蓄意逃逸。
+- 磁盘配额是**应用层软配额**：写工具（`write_file` / `edit_file` / `make_*` / 上传）在写之前拦，
+  但 `run_shell` 里的降权子进程想写什么拦不住——那是 OS 边界，不是代码边界。
+  所以 shell 走「跑完实测 + 超限冻结」，冻结后所有写入口一律拒绝，直到清理或提额。
+- `run_shell` 是黑名单 + 路径形态检查，不是容器。能挡住顺手越界，挡不住蓄意逃逸
+  （真正挡住越界的是 `lib/sandbox.js` 的 uid-split，见下）。
 - 单进程 Node 是单线程：十个人同时跑重任务会互相等 CPU。
+
+## 备份与恢复
+
+三处状态会丢、且丢了回不来：`data/`（审计 / 告警 / 权限 / 额度）、`workspace/`（每个人的文件）、
+`SECRET_DIR`（签名密钥）。备份是给这三处拍的快照。
+
+```bash
+node scripts/backup.mjs              # 立刻备份一次
+node scripts/backup.mjs --status     # 上次成功是几小时前
+node scripts/backup.mjs --keys       # 连密钥一起（末日恢复用，需人工在机器上敲）
+
+node scripts/restore.mjs --list                    # 有哪些份
+node scripts/restore.mjs --verify ren-....tar.gz   # 校验完整性
+node scripts/restore.mjs --file ren-....tar.gz --dry-run
+node scripts/restore.mjs --file ren-....tar.gz --yes   # 真的恢复
+```
+
+- **位置**：默认 `../.ren-backups`（部署目录之外，0700）。放在目录里会被下一次部署覆盖，
+  而「要回滚数据」恰恰发生在那之后。
+- **格式**：自己写的 tar.gz（不调系统 tar——中文长路径过 shell 引号、macOS 与 GNU 行为不一致），
+  包内第一项是 `manifest.json`，逐文件 sha256。
+- **定时**：进程启动后每 10 分钟检查一次「距上次成功是否超过 `REN_BACKUP_HOURS`」（默认 24）。
+  判断依据是落盘的 index，所以重启不会把计时重置。
+- **轮转**：默认留 7 份（`REN_BACKUP_KEEP`）。空包当失败——一份 0 文件的备份会把好的旧备份挤掉。
+- **密钥默认不进包**。需要时单独出一份 `.keys.tar.gz`，恢复必须显式 `--with-keys`。
+  HTTP 侧**没有**这个能力：一个带 key 的请求不该能把签名密钥导出成文件。
+- **恢复顺序**：校验 sha256 → 先给当前状态拍一份 `pre-restore` → 解到临时目录 → 才覆盖。
+  任何一步失败就停。默认是「合并覆盖」，不是「清空重来」。
+
+运维接口（需要运维 key，`?key=<alerts.key>` 或管理员账号）：
+`GET/POST /api/admin/backup`、`POST /api/admin/backup/verify`。
+
+## 额度（token / 磁盘）
+
+在此之前这两件事都没有上限：token 只有单任务预算闸，磁盘只有单文件 24MB。
+
+| 项 | 默认 | 环境变量 | 行为 |
+|---|---|---|---|
+| token / 天 | 500,000 | `REN_TOKEN_DAILY` | 发起前 402；跑的过程中撞线即中止任务 |
+| token / 月 | 5,000,000 | `REN_TOKEN_MONTHLY` | 同上 |
+| 磁盘 / 账号 | 512MB | `REN_DISK_MB` | 写前拒绝（上传 507 / 冻结 423） |
+
+- **计量来源**：上游 `usage` 帧优先；拿不到就按字符估（中文约 1 字 1 token），
+  两种分开记——`/api/quota` 会给出 `estimated` 占比，看着的数是不是账单一眼能分辨。
+- **落盘**：`data/usage/<scope>.json`。内存累加 + 5 秒 flush + 退出时 flush，
+  所以重启不会把用量清零（否则「重启即重置」就是最好用的绕限方法）。
+- **用户自助**：`GET /api/quota` 看用量，`POST /api/quota/thaw` 在清理后自己解冻
+  （服务端实测，要降到上限 80% 以下才放行——贴着上限解冻会立刻再撞一次）。
+- **运维**：`GET/POST /api/admin/quota` 列出所有账号、按账号覆盖额度、解冻。
 
 ## 记忆
 
@@ -241,7 +293,9 @@ node scripts/release.mjs --check             # 确认这版是好的
 ## 它现在还不能做什么
 
 - **多端会冲突**：同一账号在两个浏览器同时跑，工作区各是各的（scope 不同），云端任务会互相覆盖。
-- **不是真正的沙箱**：路径围栏 + 命令黑名单只是「别误伤」，不是安全边界。别把不受信任的输入喂给它。
+- **沙箱是「进程降权」而不是「容器」**：`lib/sandbox.js` 在 Linux + root 下给每个账号分配独立 uid、
+  目录 700 并降权执行（实测挡住了「用一行 JS 读别人文件」那条路），但没有 CPU / 内存 / 进程数配额；
+  一台机器仍然可能被一个账号算力吃满。没有隔离能力时 `run_shell` 直接拒绝，不会假装安全地照跑。
 - **还没有项目级共享记忆**：项目结论散在各任务的产出里，换个员工接手同一项目还得重新讲一遍。
 - **Windows 没测过**：`run_shell` 走 `/bin/sh`。
 
