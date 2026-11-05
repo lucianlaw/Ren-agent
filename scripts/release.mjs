@@ -33,6 +33,16 @@ const ROLLBACK_AT = argv.indexOf('--rollback');
 
 const say = (s = '') => console.log(s);
 const pass = (label, note = '') => console.log(`  ✓ ${label}${note ? '  ' + note : ''}`);
+
+/* 各测试文件的收尾格式不统一（「通过 N 项」/「N 通过 / M 失败」/「全部通过：N 项」），
+   这里按顺序试，取第一个能认出来的。认不出就当 0，只影响统计不影响通过与否。 */
+function countAssertions(out) {
+  for (const re of [/通过\s*(\d+)\s*项/, /(\d+)\s*通过/, /全部通过：\s*(\d+)/]) {
+    const m = out.match(re);
+    if (m) return Number(m[1]);
+  }
+  return 0;
+}
 const die = (label, note = '', hint = '') => {
   console.log(`  ✗ ${label}${note ? '  ' + note : ''}`);
   if (hint) console.log('\n' + hint.split('\n').map(l => '    ' + l).join('\n'));
@@ -112,8 +122,7 @@ say('─────────────────────────
       env: { ...process.env }
     });
     const out = String(r.stdout || '') + String(r.stderr || '');
-    const m = out.match(/通过\s*(\d+)\s*项/);
-    if (m) assertions += Number(m[1]);
+    assertions += countAssertions(out);
     if (r.status !== 0) {
       failed.push({ f, out: out.split('\n').slice(-25).join('\n') });
       console.log(`    ✗ ${f}`);

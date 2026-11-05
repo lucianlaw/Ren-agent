@@ -516,7 +516,7 @@ async function route(req, res) {
       const withKey = String(u.searchParams.get('key') || '') === ALERTS_KEY;
       const runtime = withKey ? probeRuntime() : runtimeWord();
       return send(res, 200, {
-        ok: true, v: '0.3.0',
+        ok: true, v: BUILD.version || '0.4.0',
         mode: LOCAL_ONLY ? 'local' : 'cloud',
         auth: AUTH_MODE,
         /* 线上跑的是哪个版本：发布脚本写的 build.json。没有就是「本地直接起的」，
