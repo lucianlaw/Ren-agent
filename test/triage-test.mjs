@@ -67,11 +67,12 @@ function boom(code, { route = '/api/x', where = 'doThing', msg = 'boom' } = {}) 
   return { sig, key: T.keyOf(sig) };
 }
 
-/* 造一份修复状态文件，用来模拟「试过几次 / 什么时候试的 / 还在修」 */
-function repairState(key, { attempt = 1, status = 'aborted', agoMs = 0 } = {}) {
+/* 造一份修复状态文件，用来模拟「试过几次 / 什么时候试的 / 还在修」
+   sig 单独给：孤儿判定看的是签名，而 key 只是文件名的短号。 */
+function repairState(key, { attempt = 1, status = 'aborted', agoMs = 0, sig = '' } = {}) {
   fs.mkdirSync(REPAIR_DIR, { recursive: true });
   const o = {
-    key, sig: key, branch: `heal/${key}`, dir: path.join(REPAIR_DIR, 'wt-' + key),
+    key, sig: sig || key, branch: `heal/${key}`, dir: path.join(REPAIR_DIR, 'wt-' + key),
     base: '0000000', status, by: 'ren',
     created: new Date(Date.now() - agoMs).toISOString(), test: '', attempt
   };
@@ -245,6 +246,57 @@ console.log('\n[11] 决策留痕：能回答「为什么这周一张都没修」
   ok('决策文件按本地日期命名（不退一天）',
     fs.existsSync(path.join(REPAIR_DIR, 'decisions', localDay + '.jsonl')),
     fs.readdirSync(path.join(REPAIR_DIR, 'decisions')));
+}
+
+console.log('\n[11] 孤儿状态：报错里没有这条签名了');
+{
+  /* 场景来自一次真实泄漏：别的机器的状态文件被拷进来（本地 dev 写进了生产目录）。
+     它不显示、不报错，但会污染「这周修了几轮」。 */
+  resetRepair();
+  const GHOST = '0123456789abcdef';
+  const GHOST_SIG = 'E_GHOST|/never|nothing';
+  /* 直接写文件而不是走 saveState：saveState 会把 key 重算成 keyOf(sig)，
+     而这里要复现的是「这个 key 对应的签名在报错里根本不存在」。 */
+  fs.mkdirSync(path.join(TMP, 'tickets'), { recursive: true });
+  fs.writeFileSync(path.join(TMP, 'tickets', GHOST + '.json'), JSON.stringify({
+    key: GHOST, sig: GHOST_SIG, sigVer: 1, state: 'claimed', claimedBy: 'ren',
+    history: [{ at: new Date().toISOString(), from: 'open', to: 'claimed', by: 'ren', note: '' }]
+  }, null, 2));
+  repairState(GHOST, { attempt: 2, status: 'aborted', agoMs: 3 * 86400e3 });
+
+  const live = T.listTickets({ limit: 10 }).tickets[0].sig;
+  repairState(T.keyOf(live), { attempt: 1, status: 'aborted', agoMs: 3 * 86400e3, sig: live });
+  /* 工单状态文件也要「三天前」：门槛看的是文件年龄，刚写的不会被当成残留 */
+  const ghostFile = path.join(TMP, 'tickets', GHOST + '.json');
+  const threeDaysAgo = new Date(Date.now() - 3 * 86400e3);
+  fs.utimesSync(ghostFile, threeDaysAgo, threeDaysAgo);
+
+  const r = G.sweepOrphans({ dryRun: true, olderThanDays: 1 });
+  ok('把孤儿工单报出来', r.orphanTickets.some(t => t.key === GHOST), r.orphanTickets);
+  ok('把孤儿修复记录报出来', r.orphanRepairs.some(x => x.key === GHOST), r.orphanRepairs);
+  ok('活着的单子不报', !r.orphanTickets.some(t => t.key === T.keyOf(live)), r.orphanTickets);
+  ok('dry 不删', r.deleted.tickets.length === 0 && fs.existsSync(path.join(TMP, 'tickets', GHOST + '.json')));
+
+  const blocked = G.sweepOrphans({ dryRun: false, olderThanDays: 30 });
+  ok('门槛给 30 天 → 三天前的孤儿不删', blocked.deleted.tickets.length === 0, blocked.deleted);
+
+  const done = G.sweepOrphans({ dryRun: false, olderThanDays: 1 });
+  ok('门槛给 1 天 → 真删', done.deleted.tickets.includes(GHOST), done.deleted);
+  ok('文件真的没了', !fs.existsSync(path.join(TMP, 'tickets', GHOST + '.json')));
+  ok('修复记录一并清掉', done.deleted.repairs.includes(GHOST), done.deleted);
+  ok('活着的修复记录没被动', fs.existsSync(path.join(REPAIR_DIR, T.keyOf(live) + '.json')));
+  ok('再扫一次就干净了', G.sweepOrphans({ dryRun: true }).orphanTickets.length === 0);
+}
+
+console.log('\n[12] 坏状态文件：半截 JSON 也要报出来');
+{
+  fs.mkdirSync(path.join(TMP, 'tickets'), { recursive: true });
+  fs.writeFileSync(path.join(TMP, 'tickets', 'deadbeefdeadbeef.json'), '{"sig": "half');
+  const r = G.sweepOrphans({ dryRun: true });
+  ok('标成 corrupt', r.corrupt.some(c => c.key === 'deadbeefdeadbeef'), r.corrupt);
+  ok('corrupt 不当孤儿去删（不知道它是什么，不能替人决定）',
+    !r.deleted.tickets.includes('deadbeefdeadbeef'));
+  fs.unlinkSync(path.join(TMP, 'tickets', 'deadbeefdeadbeef.json'));
 }
 
 /* 收尾：把 worktree 摘掉，别给下一次跑留垃圾 */

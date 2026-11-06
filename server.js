@@ -508,7 +508,7 @@ const OPTIONAL_AUTH = new Set(['/api/alerts', '/api/alerts/ack', '/api/sandbox-c
   /* 报错上报：必须是「可选身份」而不是「必须登录」。
      登录页自己崩掉的时候，用户手上根本没有凭证——要求先登录再报错，
      等于最该被记录的那类故障永远记不到。 */
-  '/api/incident', '/api/incidents', '/api/admin/incident-sweep',
+  '/api/incident', '/api/incidents', '/api/admin/incident-sweep', '/api/admin/state-sweep',
   /* 工单：只认运维 key（handler 里 adminOK）。和 incidents 一样放这里而不是
      直接删掉身份闸门——闸门照常验一遍，验不过也交下去，这样 cron 拿 key
      就能 curl，不必先有浏览器登录态。 */
@@ -1973,6 +1973,23 @@ async function route(req, res) {
       const b = await readBody(req, 8 * 1024);
       const r = INCIDENT.sweepIncidents({ dryRun: !!b.dryRun, keepDays: b.keepDays });
       return send(res, 200, { ok: true, ...r, stats: INCIDENT.incidentStats() });
+    }
+
+    /* ── 运维：孤儿状态清扫 ──
+       状态文件（工单 / 修复）是靠签名跟报错归组**合并**的。两边对不上时不会报错：
+       那张单只是不显示，但 stateFiles 会多出来，分诊统计还会把它算进「这周修了几轮」。
+       现实中它就发生过——本地 dev 的数据被一起打包上线，线上从此显示
+       「修复过 2 轮、接着一个从没出现过的工单号在修」。
+
+       GET 只报（包括哪些是孤儿、多大、多久了）；POST 才真删，body 里 dryRun 不给
+       默认当 false——那是调用方明确要求的。olderThanDays 默认 1 天：
+       刚写进来的孤儿有可能正在被谁处理。 */
+    if (u.pathname === '/api/admin/state-sweep' && (req.method === 'GET' || req.method === 'POST')) {
+      if (!adminOK(req, u)) return send(res, 403, { ok: false, error: 'key 不对或不是管理员' });
+      if (req.method === 'GET') return send(res, 200, { ok: true, report: TRIAGE.sweepOrphans({ dryRun: true }) });
+      const b = await readBody(req, 8 * 1024);
+      const r = TRIAGE.sweepOrphans({ dryRun: !b.execute, olderThanDays: b.olderThanDays });
+      return send(res, 200, { ok: true, report: r });
     }
 
     /* ── 运维：审计清扫 ──

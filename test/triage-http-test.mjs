@@ -196,6 +196,44 @@ try {
     const withKey = await (await fetch(`${BASE()}/api/health?key=${encodeURIComponent(KEY)}`)).json();
     ok('带 key 能看到', !!withKey.triage && typeof withKey.triage.rounds === 'number', withKey.triage);
   }
+
+  console.log('\n[7] 孤儿状态清扫：默认只报不删');
+  {
+    /* 目录从 health 里读：这个测试会先后起 dev 和 prod 两个实例，
+       各自的数据根不同，写死路径会写到另一个实例的盘子里，然后「什么都没发生」。 */
+    const h = await (await fetch(`${BASE()}/api/health?key=${encodeURIComponent(KEY)}`)).json();
+    const tdir = h.tickets.dir;
+    const ghost = '00ff00ff00ff00ff';
+    fs.mkdirSync(tdir, { recursive: true });
+    fs.writeFileSync(path.join(tdir, ghost + '.json'), JSON.stringify({
+      key: ghost, sig: 'E_GHOST|/never|nothing', sigVer: 1, state: 'open', history: []
+    }, null, 2));
+    const three = new Date(Date.now() - 3 * 86400e3);
+    fs.utimesSync(path.join(tdir, ghost + '.json'), three, three);
+
+    const noKey = await fetch(`${BASE()}/api/admin/state-sweep`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Origin: BASE() },
+      body: JSON.stringify({ execute: true })
+    });
+    ok('无 key → 403（清状态是运维动作）', noKey.status === 403, noKey.status);
+
+    const rep = await (await fetch(`${BASE()}/api/admin/state-sweep?key=${encodeURIComponent(KEY)}`)).json();
+    ok('GET 报出孤儿', (rep.report?.orphanTickets || []).some(t => t.key === ghost), rep.report);
+
+    const dry = await (await fetch(`${BASE()}/api/admin/state-sweep?key=${encodeURIComponent(KEY)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Origin: BASE() },
+      body: JSON.stringify({})
+    })).json();
+    ok('POST 不写 execute → 仍然只报', dry.report?.dryRun === true, dry.report);
+    ok('文件还在', fs.existsSync(path.join(tdir, ghost + '.json')));
+
+    const real = await (await fetch(`${BASE()}/api/admin/state-sweep?key=${encodeURIComponent(KEY)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Origin: BASE() },
+      body: JSON.stringify({ execute: true, olderThanDays: 1 })
+    })).json();
+    ok('带了 execute 才真删', (real.report?.deleted?.tickets || []).includes(ghost), real.report?.deleted);
+    ok('文件没了', !fs.existsSync(path.join(tdir, ghost + '.json')));
+  }
 } finally {
   stop();
 }
