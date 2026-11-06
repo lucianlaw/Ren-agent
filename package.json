@@ -13,6 +13,7 @@
     "dev": "node scripts/dev.mjs",
     "release": "node scripts/release.mjs",
     "test": "for f in test/*.mjs; do node \"$f\" || exit 1; done",
-    "prove": "node scripts/prove.mjs"
+    "prove": "node scripts/prove.mjs",
+    "heal": "node scripts/heal.mjs"
   }
 }

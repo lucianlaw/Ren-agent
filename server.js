@@ -37,6 +37,7 @@ import * as METRICS from './lib/metrics.js';
 import * as INCIDENT from './lib/incident.js';
 import * as TICKET from './lib/ticket.js';
 import { runProof, saveProof, proofStats } from './lib/proof.js';
+import * as REPAIR from './lib/repair.js';
 import * as DEVINFO from './lib/devinfo.js';
 import { addAlert, listAlerts, ackAlerts, ADMIN_EMAIL, ALERTS_KEY } from './lib/alerts.js';
 import { probeRuntime, runtimeWord, hardenAll, uidForScope, runIsolated } from './lib/sandbox.js';
@@ -510,7 +511,11 @@ const OPTIONAL_AUTH = new Set(['/api/alerts', '/api/alerts/ack', '/api/sandbox-c
   /* 工单：只认运维 key（handler 里 adminOK）。和 incidents 一样放这里而不是
      直接删掉身份闸门——闸门照常验一遍，验不过也交下去，这样 cron 拿 key
      就能 curl，不必先有浏览器登录态。 */
-  '/api/tickets', '/api/ticket', '/api/ticket/claim', '/api/ticket/settle', '/api/ticket/prove']);
+  '/api/tickets', '/api/ticket', '/api/ticket/claim', '/api/ticket/settle', '/api/ticket/prove',
+  /* 修复工作区：凭证是自审令牌（handler 里 selfAuth），而且只在 dev 实例开。
+     放这里是因为真正的调用方是维护用的命令行，没有浏览器登录态——
+     要求先登录等于「只有人能点，脚本不能跑」，那这条链路就只能靠手。 */
+  '/api/self/repair']);
 
 
 /* ── 内部调用凭证 ──
@@ -660,6 +665,12 @@ function clientMeta(req) {
     origin: String(req.headers.origin || '')
   };
 }
+
+/* 截断到 n 个字符（审计字段不该无限长） */
+const clip = (s, n) => {
+  const t = s == null ? '' : String(s);
+  return t.length > n ? t.slice(0, n) + '…' : t;
+};
 
 /* ── 路由 ── */
 const server = http.createServer((req, res) => {
@@ -1062,6 +1073,69 @@ async function route(req, res) {
           ms: Date.now() - t0
         }
       });
+    }
+
+    /* ── 修复工作区：让 ren agent 真的能改 ──
+       前四个入口（可见 / dev / 工单 / 自证）都是基础设施，这一条才是手：
+       begin → 改 → prove → submit，走完就是一张 fixed 的单子。
+       三道克制写在 lib/repair.js 里（只 dev 实例开、只能碰 worktree 内的源码、
+       红线文件与围栏函数禁改），这里只负责把动作接上并留审计。 */
+    if (u.pathname === '/api/self/repair' && req.method === 'POST') {
+      if (!internal && !rateOK(req)) return send(res, 429, { ok: false, error: '调用太频繁，缓一下' });
+      const b = await readBody(req, 512 * 1024);
+      const a = selfAuth(b.token);
+      if (!a.ok) return send(res, a.code, { ok: false, error: a.error });
+
+      /* 只在 dev 实例开。这条判断放在令牌之后：没令牌的人不该知道
+         这个实例是不是 dev——那本身就是一条信息。 */
+      const av = REPAIR.available();
+      if (!av.ok) return send(res, av.code, { ok: false, error: av.why });
+
+      const action = String(b.action || '');
+      const key = String(b.id || b.key || '');
+      const t0 = Date.now();
+      let out;
+      if (action === 'list') out = { ok: true, repairs: REPAIR.list() };
+      else if (action === 'begin') {
+        out = await REPAIR.begin({ sig: String(b.sig || b.id || ''), by: String(b.by || 'ren') });
+      } else if (action === 'tree') out = REPAIR.tree({ key, dir: b.dir });
+      else if (action === 'read') out = REPAIR.read({ key, path: b.path, from: b.from, lines: b.lines });
+      else if (action === 'write') out = REPAIR.writeFile({ key, path: b.path, content: b.content });
+      else if (action === 'edit') out = REPAIR.editFile({ key, path: b.path, old: b.old, new: b.new, all: !!b.all });
+      else if (action === 'grep') out = REPAIR.grep({ key, q: b.q, glob: b.glob });
+      else if (action === 'diff') out = await REPAIR.diff({ key, full: !!b.full });
+      else if (action === 'revert') out = await REPAIR.revert({ key });
+      else if (action === 'abort') out = await REPAIR.abort({ key, force: !!b.force });
+      else if (action === 'prove' || action === 'submit') {
+        /* 和 /api/ticket/prove 共用同一个锁：两边都会建 worktree，
+           同时跑会互相把对方的 worktree 删掉。 */
+        if (PROOF_BUSY.on) {
+          return send(res, 429, { ok: false, error: `已有一次证明在跑（${PROOF_BUSY.since} 开始），等它完再提交` });
+        }
+        PROOF_BUSY.on = true;
+        PROOF_BUSY.since = new Date().toISOString();
+        try {
+          out = action === 'prove'
+            ? await REPAIR.prove({ key, test: String(b.test || '') })
+            : await REPAIR.submit({ key, note: String(b.note || ''), test: String(b.test || '') });
+        } finally {
+          PROOF_BUSY.on = false;
+          PROOF_BUSY.since = '';
+        }
+      } else {
+        return send(res, 400, { ok: false, error: `不认识的动作「${clip(action, 40)}」` });
+      }
+
+      /* 改源码这个动作必须留痕：一个月后想回答「那版是谁改的、为什么」，
+         只有 patch 没有审计是答不出来的。 */
+      writeAudit({
+        kind: 'repair', scope: '', action: `修复工作区 ${action}`,
+        target: clip(key || String(b.path || b.sig || '-'), 200),
+        ok: !!out.ok, blocked: /红线/.test(String(out.error || '')), ms: Date.now() - t0,
+        output: clip(out.error || (out.proof && out.proof.why) || (out.status || 'ok'), 400),
+        ...clientMeta(req)
+      });
+      return send(res, out.ok ? 200 : 409, out);
     }
 
     /* 执行一步工具 */

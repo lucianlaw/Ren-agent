@@ -329,8 +329,12 @@ console.log('\n[11] 弱红的证据：能标 fixed，不能标 verified');
 console.log('\n[12] 接线：入口、鉴权、命令都真的存在');
 {
   const srv = fs.readFileSync(path.join(APP, 'server.js'), 'utf8');
+  /* 取整个 OPTIONAL_AUTH 集合字面量，而不是「声明之后 800 个字符」——
+     那个窗口是按当时的注释长度凑出来的，之后往集合里加一条就会假红。 */
+  const optStart = srv.indexOf('const OPTIONAL_AUTH');
+  const optSet = optStart < 0 ? '' : srv.slice(optStart, srv.indexOf(']);', optStart) + 3);
   ok('有 /api/ticket/prove 端点', /u\.pathname === '\/api\/ticket\/prove'/.test(srv));
-  ok('端点在 OPTIONAL_AUTH 里（先过闸门再判 key）', /'\/api\/ticket\/prove'\]\)/.test(srv) || /\/api\/ticket\/prove'/.test(srv.slice(srv.indexOf('OPTIONAL_AUTH'), srv.indexOf('OPTIONAL_AUTH') + 800)));
+  ok('端点在 OPTIONAL_AUTH 里（先过闸门再判 key）', /'\/api\/ticket\/prove'/.test(optSet));
   ok('端点要运维 key', /pathname === '\/api\/ticket\/prove'[\s\S]{0,200}adminOK/.test(srv));
   ok('有全局串行锁（否则两个证明会抢 worktree）', /PROOF_BUSY/.test(srv) && /已有一次证明在跑/.test(srv));
   ok('用的是异步子进程而不是 execSync（不能卡住事件循环）', /await runProof/.test(srv) && !/execSync[\s\S]{0,80}runProof/.test(srv));
