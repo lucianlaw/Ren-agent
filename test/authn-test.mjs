@@ -16,6 +16,9 @@ process.env.WORKSPACE_DIR = WS;   // 必须在 import 之前：workspace.js 在�
 /* 密钥目录也指到临时目录：这个测试会真的生成一把签名密钥，
    不指的话会写进本机 .ren-secrets，跑一次测试就换掉线上链接的签名根。 */
 const SECRETS = fs.mkdtempSync(path.join(os.tmpdir(), 'ren-authn-secrets-'));
+/* 四本账的落点也必须指到临时目录：拉起来的 server.js 不是 test 入口，
+   lib/testdir.js 的测试兜底对它不生效，留空就会写进项目真实的 data/。 */
+const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ren-authn-data-'));
 process.env.REN_SECRET_DIR = SECRETS;
 
 const { verifyToken, parseSubject, fileKey, checkFileKey, __test } =
@@ -220,7 +223,7 @@ console.log('\n[6] 端到端：没有凭证进不来，有签名才放行');
     cwd: path.join(path.dirname(fileURLToPath(import.meta.url)), '..'),
     /* 不传 REN_AUTH_SECRET：让子进程读工作区里那份密钥文件，
        和本进程算出同一串签名。传一个不同的密钥，这里就会假红。 */
-    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', WORKSPACE_DIR: WS, REN_AUTH_SECRET: '' },
+    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', WORKSPACE_DIR: WS, REN_AUTH_SECRET: '', AUDIT_DIR: path.join(DATA, 'audit'), INCIDENT_DIR: path.join(DATA, 'incidents'), TICKET_DIR: path.join(DATA, 'tickets'), PROOF_DIR: path.join(DATA, 'proofs') },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let out = '';

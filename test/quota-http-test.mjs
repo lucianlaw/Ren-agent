@@ -87,6 +87,11 @@ const srv = spawn(process.execPath, ['server.js'], {
     PORT: String(PORT),
     HOST: '127.0.0.1',
     WORKSPACE_DIR: WS,
+    /* 拉起来的 server.js 不是 test 入口，lib/testdir.js 的测试兜底对它不生效 */
+    AUDIT_DIR: path.join(TMP, 'audit'),
+    INCIDENT_DIR: path.join(TMP, 'incidents'),
+    TICKET_DIR: path.join(TMP, 'tickets'),
+    PROOF_DIR: path.join(TMP, 'proofs'),
     REN_USAGE_DIR: USAGE,
     REN_BACKUP_DIR: BK,
     REN_SECRET_DIR: SECRETS,
