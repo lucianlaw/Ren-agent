@@ -6,15 +6,16 @@
  * 出了问题既回答不了「线上是哪个版本」，也没法「回滚到上一版」。更常见的是
  * 测试没跑就发了——不是有人故意，是没有任何东西会拦。
  *
- * 四道门，按「越便宜越先」排：
+ * 五道门，按「越便宜越先」排：
  *   1. 工作区必须干净 —— 否则线上跑的东西不是一个 commit，回滚无从谈起
  *   2. 部署目录不许有密钥文件 —— 上传是把整个目录压包，密钥会跟着走
- *   3. 全量测试必须通过 —— 这才是真正的闸门，不是我记得跑
- *   4. 产物冒烟 —— 把将要上传的那一份单独跑起来（平台上没有第二个应用可建，
+ *   3. 部署目录不许有运行时数据 —— 同上，而且它会在线上装成生产数据
+ *   4. 全量测试必须通过 —— 这才是真正的闸门，不是我记得跑
+ *   5. 产物冒烟 —— 把将要上传的那一份单独跑起来（平台上没有第二个应用可建，
  *      「先验后发」只能退化成这一步，见 scripts/stage.mjs 的说明）
  *
  * 用法：
- *   node scripts/release.mjs            跑完四道门，写 build.json
+ *   node scripts/release.mjs            跑完五道门，写 build.json
  *   node scripts/release.mjs --check    只跑门，不写文件（CI / 发布前自查）
  *   node scripts/release.mjs --rollback <ref>
  *                                       把工作区切回某个 tag/commit，并提示下一步
@@ -27,6 +28,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { findSecretFiles, APP_ROOT } from '../lib/config.js';
 import { nextVersion } from '../lib/version.js';
+import { runtimeDataFiles, explain } from '../lib/deployguard.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -79,7 +81,7 @@ if (ROLLBACK_AT >= 0) {
 say('发布闸门');
 say('────────────────────────────────────────');
 
-/* [1/4] 工作区干净 */
+/* [1/5] 工作区干净 */
 {
   const st = git(['status', '--porcelain']);
   const head = git(['rev-parse', '--short', 'HEAD']);
@@ -95,7 +97,7 @@ say('─────────────────────────
   pass('工作区干净', `${branch.out} @ ${head.out}`);
 }
 
-/* [2/4] 部署目录不许有密钥 */
+/* [2/5] 部署目录不许有密钥 */
 {
   /* 名单与 test/config-test.mjs 共用 lib/config.js 里那一份 */
   const allow = String(process.env.REN_ALLOW_LEGACY_SECRETS || '')
@@ -110,7 +112,28 @@ say('─────────────────────────
   pass('部署目录无密钥');
 }
 
-/* [3/4] 全量测试 */
+/* [3/5] 部署目录不许有运行时数据
+ *
+ * 这条是踩出来的：`data/` 在 .gitignore 里，所以它**不会**被 `git status` 看见，
+ * 第 1 道门完全放行。但发布工具传的是目录，不是 commit——于是本地跑 dev 时
+ * 写进 `data/` 的工单状态、修复快照、分诊决策，一起被打包上去，在线上装成生产数据。
+ *
+ * 表现出来是很像 bug 的正常现象：线上 health 里出现「修复过 2 轮、当前接着
+ * 6927c3… 在修」，而那个工单号在线上根本不存在；工单列表里多出一张从没发生过的
+ * E_UI_RENDER。没有这道门的话，唯一的发现方式是去读那条快照并且记得自己没造过它。
+ *
+ * 判定逻辑在 lib/deployguard.js：放在这里就没法测（这个文件一被 import 就跑满
+ * 五道门），而那正是「闸门自己没被验过」的老问题。 */
+{
+  const files = runtimeDataFiles(ROOT);
+  if (files.length) {
+    const e = explain(files, files.length);
+    die(e.label, e.note, e.hint);
+  }
+  pass('部署目录无运行时数据');
+}
+
+/* [4/5] 全量测试 */
 {
   const dir = path.join(ROOT, 'test');
   const files = fs.readdirSync(dir).filter(f => f.endsWith('.mjs')).sort();
@@ -139,7 +162,7 @@ say('─────────────────────────
   pass('全量测试通过', `${files.length} 个文件 / ${assertions} 项断言 / ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 }
 
-/* [4/4] 产物冒烟：把「将要上传的那一份」单独跑起来
+/* [5/5] 产物冒烟：把「将要上传的那一份」单独跑起来
    这一道是 staging 的替代品——平台上发布永远覆盖同一个应用（没有第二个应用可建），
    所以「先在测试环境验」只能退化成「先把产物独立跑一遍再传」。 */
 {

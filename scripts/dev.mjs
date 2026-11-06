@@ -17,7 +17,10 @@
      <REN_DEV_ROOT>/workspace  所有账号的工作区
      <REN_DEV_ROOT>/audit      审计日志
      <REN_DEV_ROOT>/incidents  报错记录
-   四个都在 REN_DEV_ROOT 下，这正是 lib/devinfo.js 要求的——
+     <REN_DEV_ROOT>/tickets    工单状态
+     <REN_DEV_ROOT>/repair     修复工作区（worktree + 分诊决策）
+     <REN_DEV_ROOT>/proofs     自证证据
+   七个都在 REN_DEV_ROOT 下，这正是 lib/devinfo.js 要求的——
    任何一个跑到外面去，server 会拒绝启动。 */
 
 import fs from 'node:fs';
@@ -55,7 +58,13 @@ const DIRS = {
   WORKSPACE_DIR: path.join(DEV_ROOT, 'workspace'),
   REN_STATE_DIR: path.join(DEV_ROOT, 'state'),
   AUDIT_DIR: path.join(DEV_ROOT, 'audit'),
-  INCIDENT_DIR: path.join(DEV_ROOT, 'incidents')
+  INCIDENT_DIR: path.join(DEV_ROOT, 'incidents'),
+  /* 这三个是后来加的库（工单 / 修复工作区 / 自证证据）。它们的 `*_DIR`
+     不设就落回 `data/<库>`，而那正是生产在用的那一份——dev 实例上演示一轮，
+     生产数据目录里就多出一批假工单，下一次发布还会把整个 data/ 打包上去。 */
+  TICKET_DIR: path.join(DEV_ROOT, 'tickets'),
+  REPAIR_DIR: path.join(DEV_ROOT, 'repair'),
+  PROOF_DIR: path.join(DEV_ROOT, 'proofs')
 };
 
 for (const [k, v] of Object.entries(DIRS)) {

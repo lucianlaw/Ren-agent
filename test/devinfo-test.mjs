@@ -32,7 +32,10 @@ const goodEnv = () => ({
   WORKSPACE_DIR: path.join(DEV_ROOT, 'workspace'),
   REN_STATE_DIR: path.join(DEV_ROOT, 'state'),
   AUDIT_DIR: path.join(DEV_ROOT, 'audit'),
-  INCIDENT_DIR: path.join(DEV_ROOT, 'incidents')
+  INCIDENT_DIR: path.join(DEV_ROOT, 'incidents'),
+  TICKET_DIR: path.join(DEV_ROOT, 'tickets'),
+  REPAIR_DIR: path.join(DEV_ROOT, 'repair'),
+  PROOF_DIR: path.join(DEV_ROOT, 'proofs')
 });
 
 console.log('\n[1] 非 dev 模式一律放行（生产和本地直接 node server.js 都不能被这段拦住）');
@@ -93,9 +96,14 @@ console.log('\n[4] 端口：必须显式、必须是数、不能是生产口');
   ok('PORT=8090 放行', D.assertSafe(goodEnv()).ok === true);
 }
 
-console.log('\n[5] 数据边界：四个目录都得显式设，都得在 dev 根里');
+console.log('\n[5] 数据边界：每个目录都得显式设，都得在 dev 根里');
 {
-  const KEYS = ['WORKSPACE_DIR', 'REN_STATE_DIR', 'AUDIT_DIR', 'INCIDENT_DIR'];
+  const KEYS = ['WORKSPACE_DIR', 'REN_STATE_DIR', 'AUDIT_DIR', 'INCIDENT_DIR',
+    'TICKET_DIR', 'REPAIR_DIR', 'PROOF_DIR'];
+  /* 这条钉的是「新库有没有被加进闸门」：加库时漏掉一个，
+     那一份数据就落回生产的 data/ 里，而闸门照样报合格。 */
+  eq('闸门认得全部七个数据目录', D.__test.DIRS.map(d => d[0]).sort(), KEYS.slice().sort());
+
   for (const k of KEYS) {
     const e = goodEnv(); delete e[k];
     const r = D.assertSafe(e);
@@ -108,7 +116,10 @@ console.log('\n[5] 数据边界：四个目录都得显式设，都得在 dev �
     ['WORKSPACE_DIR', 'workspace'],
     ['REN_STATE_DIR', '..ren-state'],
     ['AUDIT_DIR', 'data/audit'],
-    ['INCIDENT_DIR', 'data/incidents']
+    ['INCIDENT_DIR', 'data/incidents'],
+    ['TICKET_DIR', 'data/tickets'],
+    ['REPAIR_DIR', 'data/repair'],
+    ['PROOF_DIR', 'data/proofs']
   ];
   for (const [k, rel] of PRODISH) {
     const e = goodEnv(); e[k] = path.resolve(ROOT, rel);
@@ -135,7 +146,7 @@ console.log('\n[6] 多个问题一次全报，不是修一个报一个');
 {
   const e = { REN_DEV_INSTANCE: '1', HOST: '0.0.0.0', PORT: '8080' };
   const p = D.isolationProblems(e);
-  ok('至少报 6 条（host + port + 4 个目录）', p.length >= 6, p.length);
+  ok('至少报 9 条（host + port + 7 个目录）', p.length >= 9, p.length);
   ok('每条都有中文说明', p.every(s => /[\u4e00-\u9fa5]/.test(s)), p);
   const m = D.assertSafe(e).message;
   ok('消息里带「这是闸门，不是 bug」', /闸门/.test(m), m.slice(0, 80));
@@ -165,7 +176,10 @@ console.log('\n[7] 真起进程：不合格的 dev 实例必须 exit 2，且不�
     WORKSPACE_DIR: path.join(DEV_ROOT, 'workspace'),
     REN_STATE_DIR: path.join(DEV_ROOT, 'state'),
     AUDIT_DIR: path.join(DEV_ROOT, 'audit'),
-    INCIDENT_DIR: path.join(DEV_ROOT, 'incidents')
+    INCIDENT_DIR: path.join(DEV_ROOT, 'incidents'),
+    TICKET_DIR: path.join(DEV_ROOT, 'tickets'),
+    REPAIR_DIR: path.join(DEV_ROOT, 'repair'),
+    PROOF_DIR: path.join(DEV_ROOT, 'proofs')
   });
   eq('绑 0.0.0.0 的 dev 实例退出码是 2', bad.code, 2);
   ok('退出前把原因打出来了', /不是回环地址/.test(bad.out), bad.out.slice(0, 300));
@@ -184,8 +198,10 @@ console.log('\n[8] 源码钉住：这三处一旦被改，闸门就形同虚设'
   ok('dev.mjs 写死 REN_DEV_INSTANCE', /REN_DEV_INSTANCE:\s*'1'/.test(dev));
   ok('dev.mjs 写死 HOST=127.0.0.1', /HOST:\s*'127\.0\.0\.1'/.test(dev));
   ok('dev.mjs 抢 8080 时先自己拦下', /8080/.test(dev) && /process\.exit\(2\)/.test(dev));
-  ok('dev.mjs 四个目录都在 DEV_ROOT 下', ['WORKSPACE_DIR', 'REN_STATE_DIR', 'AUDIT_DIR', 'INCIDENT_DIR']
-    .every(k => new RegExp(k + ':\\s*path\\.join\\(DEV_ROOT').test(dev)));
+  ok('dev.mjs 每个数据目录都在 DEV_ROOT 下（七个一个不能漏）',
+    D.__test.DIRS.map(d => d[0])
+      .every(k => new RegExp(k + ':\\s*path\\.join\\(DEV_ROOT').test(dev)));
+  ok('dev.mjs 的目录清单与闸门清单是同一份', D.__test.DIRS.length === 7, D.__test.DIRS.length);
 
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
   ok('package.json 有 dev 脚本', pkg.scripts.dev === 'node scripts/dev.mjs', pkg.scripts.dev);

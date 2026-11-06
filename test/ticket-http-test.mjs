@@ -217,6 +217,20 @@ try {
       const cj = await c.json();
       ok('领取成功', c.ok === true && cj.state === 'claimed', cj);
 
+      /* 参数名撞车的三条：`key` 在别处一律指工单短号，而 settle 收的是签名。
+         写成 `sig || key` 时，传短号会被当签名去找、找不到就 409，
+         看起来像「状态机不允许这么改」，实际是传错了东西——本人就这么错过一次。 */
+      const wrongName = await postJson('/api/ticket/settle', { key: t0.key, state: 'dropped', note: 'x' });
+      const wj = await wrongName.json();
+      ok('传 key（短号）→ 400 而不是 409', wrongName.status === 400, wrongName.status);
+      ok('说清 key 是短号、该用 sig 或 id', /id/.test(String(wj.error || '')) && /短号/.test(String(wj.error || '')), wj.error);
+
+      const noId = await postJson('/api/ticket/settle', { state: 'dropped', note: 'x' });
+      ok('什么都不传 → 400', noId.status === 400, noId.status);
+
+      const ghost = await postJson('/api/ticket/settle', { id: 'ffffffffffffffff', state: 'dropped', note: 'x' });
+      ok('不存在的 id → 404（不是 409，两者含义完全不同）', ghost.status === 404, ghost.status);
+
       const again = await postJson('/api/ticket/claim', { sig: t0.sig, by: 'ren-agent' });
       ok('不能重复领取（已是 claimed）', again.status === 409, again.status);
 
@@ -303,8 +317,8 @@ try {
     {
       const list = await (await get('/api/tickets')).json();
       const t = list.tickets[list.tickets.length - 1];
-      const d = await postJson('/api/ticket/settle', { sig: t.sig, state: 'dropped', by: 'me', note: '断网时的正常失败' });
-      ok('open → dropped 成功', d.status === 200, d.status);
+      const d = await postJson('/api/ticket/settle', { id: t.key, state: 'dropped', by: 'me', note: '断网时的正常失败' });
+      ok('open → dropped 成功（用 id 指定，不用背签名）', d.status === 200, d.status);
 
       const normal = await (await get('/api/tickets')).json();
       ok('默认列表不含 dropped', !normal.tickets.some(x => x.sig === t.sig));

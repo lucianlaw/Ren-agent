@@ -1912,9 +1912,24 @@ async function route(req, res) {
     if (u.pathname === '/api/ticket/settle' && req.method === 'POST') {
       if (!adminOK(req, u)) return send(res, 403, { ok: false, error: 'key 不对或不是管理员' });
       const b = await readBody(req, 16 * 1024);
-      const sig = String(b.sig || b.key || '');
-      if (!sig) return send(res, 400, { ok: false, error: '要给 sig 或 key' });
-      const r = TICKET.settle(sig, { state: b.state, by: b.by, note: b.note });
+      /* 参数名在这里特别容易撞：`key` 在别处一律指「工单短号」（?key=），
+         而 settle 收的是**签名**。写成 `b.sig || b.key` 的结果是：
+         传短号进来会被当作签名去找，找不到就 409——看起来像「这张单不能这么改」，
+         实际是传错了东西。本人就踩过：把线上那张 507 结算成 dropped，
+         回执 409 被当成「状态机不允许」，工单一直挂着。
+         所以这里只认两个明确的键：`sig` 或 `id`，别的名字直接说清楚。 */
+      const sig = String(b.sig || b.id || '');
+      if (!sig) {
+        return send(res, 400, {
+          ok: false,
+          error: b.key
+            ? '`key` 是工单短号，settle 要的是签名或 id：用 {"sig":"错误码|路由|函数"} 或 {"id":"<短号>"}'
+            : '要给 sig 或 id'
+        });
+      }
+      const t = TICKET.getTicket(sig) || TICKET.listTickets({ limit: 500 }).tickets.find(x => x.key === sig);
+      if (!t) return send(res, 404, { ok: false, error: `找不到这张单子：${sig}` });
+      const r = TICKET.settle(t.sig, { state: b.state, by: b.by, note: b.note });
       return send(res, r.ok ? 200 : 409, r);
     }
 
