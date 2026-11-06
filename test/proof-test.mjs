@@ -29,6 +29,7 @@ process.env.INCIDENT_DIR = path.join(TMP, 'incident');
 
 const P = await import('../lib/proof.js');
 const T = await import('../lib/ticket.js');
+const I = await import('../lib/incident.js');
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra) => {
@@ -275,6 +276,9 @@ console.log('\n[10] 工单：没有证据不许说「修好了」');
 {
   const sig = 'E_TOOL_FAIL|/api/x|doThing';
   const key = T.keyOf(sig);
+  /* 工单是从报错归组里长出来的：不先报一次错，结算会被「没有这张单子」拒掉
+     （那正是 0.8.18 加的校验，见 ticket-test 的 [4b]）。 */
+  I.report({ code: 'E_TOOL_FAIL', route: '/api/x', where: 'doThing', msg: 'spawn failed', scope: 'a'.repeat(32) });
 
   const a = T.settle(sig, { state: 'claimed', note: '' });
   ok('先领取', a.ok === true, a.error);
@@ -312,7 +316,11 @@ console.log('\n[10] 工单：没有证据不许说「修好了」');
 
 console.log('\n[11] 弱红的证据：能标 fixed，不能标 verified');
 {
-  const sig = 'E_UNKNOWN|/api/y|doOther';
+  /* E_UNKNOWN 的签名带归一化消息的哈希，所以照抄字面量对不上——
+     报一次错、用同一套算法算签名，才和线上一致。 */
+  const msg = 'weird thing happened';
+  I.report({ code: 'E_UNKNOWN', route: '/api/y', where: 'doOther', msg, scope: 'a'.repeat(32) });
+  const sig = I.signature({ code: 'E_UNKNOWN', route: '/api/y', where: 'doOther', msg });
   T.settle(sig, { state: 'claimed' });
   const weak = { ok: true, strong: false, sig, test: 'test/y-test.mjs', red: { kind: 'load', exit: 1 }, green: { exit: 0, pass: 4, fail: 0 }, at: new Date().toISOString() };
   P.saveProof(weak);
