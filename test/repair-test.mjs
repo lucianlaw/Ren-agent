@@ -312,6 +312,11 @@ console.log('\n[9] 自证 + 交单：只能到 fixed');
 
   const again = await R.submit({ key, note: '再来一次' });
   ok('已交过的单子不能重复交', !again.ok);
+
+  /* 交单之后还能改的话，复核的人拿到的 patch 会和磁盘上那份悄悄分叉——
+     「证据是真的，但证明的不是这一版」，比没有证据更难发现。 */
+  const w = R.writeFile({ key, path: 'lib/x.js', content: 'export function add(a, b) { return 0; }\n' });
+  ok('交单之后不许再改', !w.ok && /交单/.test(w.error), w.error);
 }
 
 console.log('\n[10] 中止：worktree 摘掉，分支默认留着');

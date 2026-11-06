@@ -122,7 +122,10 @@ let res, data;
 try {
   res = await fetch(URL_BASE + '/api/self/repair', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    /* Origin 必须带：服务端的同源校验对「没有 Origin」的请求一律拒绝。
+       命令行的 Origin 没有浏览器那一层保证，但这条接口真正的凭证是令牌，
+       Origin 只是让「从别的网页里偷偷打过来」这条路走不通。 */
+    headers: { 'content-type': 'application/json', origin: URL_BASE },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(600000)      /* 自证可能要跑几分钟 */
   });
