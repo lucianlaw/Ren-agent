@@ -164,12 +164,15 @@ say('─────────────────────────
 {
   const pkgPath = path.join(ROOT, 'package.json');
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  /* 先把旧版本号存下来：下面会把 pkg.version 改成新值，改完再打印就成了
+     「0.8.9 → 0.8.9」——闸门输出的每一条都是给人看的证据，印错了就等于没有。 */
+  const before = pkg.version;
   let last = '';
   try { last = JSON.parse(fs.readFileSync(path.join(ROOT, 'build.json'), 'utf8')).version || ''; } catch { /* 第一次发布 */ }
   const pick = nextVersion(pkg.version, last);
   if (pick.bumped) {
     if (CHECK_ONLY) {
-      say(`  · 版本号该升了：${pkg.version} → ${pick.version}（--check 只提示，不改文件）`);
+      say(`  · 版本号该升了：${before} → ${pick.version}（--check 只提示，不改文件）`);
     } else {
       pkg.version = pick.version;
       fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
@@ -181,7 +184,7 @@ say('─────────────────────────
         die('版本号已改成 ' + pick.version + '，但提交失败', c.err.slice(0, 200),
           '手动提交 package.json 之后重跑闸门。');
       }
-      pass('版本号自动递增', `${pkg.version} → ${pick.version}`);
+      pass('版本号自动递增', `${before} → ${pick.version}`);
     }
   } else {
     pass('版本号已递增', pkg.version + (last ? `（上次发布 ${last}）` : ''));
