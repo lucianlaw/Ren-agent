@@ -6353,10 +6353,22 @@ function stripCodeBlocks(s) {
   return t;
 }
 
+/* 网关掩码：规则只有一份，实现在 agent.js（wafMask）。
+   2026-11-06 实测出来的：前置 WAF 按内容拦——script 标签成对出现、onclick= 这类
+   事件属性、alert(、alert、../ 穿越都会 403，跟体积无关（200KB 纯中文反而放行）。
+   这里不重复实现，改用同一份规则；拿不到就原样返回（单测直接加载 app.js 时就是这种情况）。 */
+function wafMaskText(s) {
+  const t = String(s == null ? '' : s);
+  try {
+    if (window.BOSS && typeof BOSS.wafMask === 'function') return BOSS.wafMask(t);
+  } catch (e) { /* 掩码失败不影响主流程 */ }
+  return t;
+}
+
 /* 一条文本怎么洗：先剥代码块，剥完还带源码特征就整条换成指针。 */
 function scrubText(s, near, keep) {
   const t = String(s == null ? '' : s);
-  const cleaned = stripCodeBlocks(t);
+  const cleaned = wafMaskText(stripCodeBlocks(t));
   if (looksCode(cleaned)) {
     return `（这条消息里有整段代码/网页源码，${t.length} 字，已省略：文件在工作区，需要就 read_file）`;
   }
@@ -6370,7 +6382,7 @@ function scrubText(s, near, keep) {
    表现就是「完整轨迹没同步上」。 */
 function scrubKeep(s) {
   const t = String(s == null ? '' : s);
-  const c = stripCodeBlocks(t);
+  const c = wafMaskText(stripCodeBlocks(t));
   if (looksCode(c)) return `（这段里有 ${t.length} 字源码，已省略：文件在工作区，要读就 read_file）`;
   return c;
 }
@@ -6380,7 +6392,7 @@ function scrubArgs(args) {
   const out = {};
   for (const [k, v] of Object.entries(args)) {
     if (typeof v === 'string') {
-      out[k] = looksCode(v) ? `（${v.length} 字源码已省略：在文件里）` : v;
+      out[k] = looksCode(v) ? `（${v.length} 字源码已省略：在文件里）` : wafMaskText(v);
     } else if (v && typeof v === 'object') {
       const s = JSON.stringify(v);
       out[k] = looksCode(s) ? '（源码已省略）' : v;

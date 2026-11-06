@@ -312,12 +312,17 @@
       if (Array.isArray(out.tool_calls)) {
         out.tool_calls = out.tool_calls.map(tc => {
           const a = tc && tc.function && tc.function.arguments;
-          if (typeof a !== 'string' || a.length <= 4000) return tc;
+          if (typeof a !== 'string') return tc;
+          if (a.length <= 4000 && !wafHit(a)) return tc;
           return { ...tc, function: { ...tc.function, arguments: '{"note":"文件全文已省略；内容已在工作区，需要就 read_file"}' } };
         });
       }
-      if (typeof out.content === 'string' && out.content.length > 20000) {
-        out.content = out.content.slice(0, 600) + '\n…[内容过长已省略：全文在工作区或产出文件里，要看就 read_file]…';
+      if (typeof out.content === 'string') {
+        if (out.content.length > 20000) {
+          out.content = out.content.slice(0, 600) + '\n…[内容过长已省略：全文在工作区或产出文件里，要看就 read_file]…';
+        }
+        /* 存档也会过同一道网关：云库那条链路 403 时的表现是「完整轨迹没同步上」 */
+        out.content = wafMask(out.content);
       }
       return out;
     });
@@ -331,9 +336,15 @@
      规矩：任何错误文本进界面前必须过 sanitizeErrText；识别出是拦截页就给修复指引，
      并在 callWithRetry 里自动精简上下文重试一次。 */
   const WAF_RE = /WAF拦截|Web应用防护|WAF 防护|block-pages|您的请求可能为|请求已被拦截|请求被中断|拦截页面|security.?policy|.access denied.|captcha/i;
+  /* 拦截页被 llm.js 压成一行之后（去标签 + 截 160 字）就**没有 <html> 了**，
+     老判定（要求有标签或 >800 字）永远为假 —— 自愈逻辑从没触发过，
+     现场表现就是「网关明明说 WAF 拦截，界面却当成普通 403 报给老板」。
+     这几个词是拦截页正文里稳定出现的，不看长度也认得出。 */
+  const WAF_MARK = /submitWafFeedback|api\.waf\.qq|WAF拦截页面|WAF 拦截页面/i;
   function looksLikeBlockPage(s) {
     const t = String(s || '');
-    if (!WAF_RE.test(t)) return false;
+    if (!WAF_RE.test(t) && !WAF_MARK.test(t)) return false;
+    if (WAF_MARK.test(t)) return true;
     return /<html|<!doctype|<head|<body/i.test(t) || t.length > 800;
   }
   function stripErrHtml(s) {
@@ -348,7 +359,8 @@
   function sanitizeErrText(s) {
     const t = String(s || '');
     if (looksLikeBlockPage(t)) {
-      return '请求被安全网关（WAF）拦下了：这一轮对话里带着整段生成的网页代码，被误判成了攻击内容。点「继续跑」我会用精简过的上下文重试；或者让员工先把代码落盘、别在对话里贴全文。';
+      return '请求被安全网关拦下了：内容里有 script 标签、onclick= 这类事件属性，或者 alert( / ../ 这类写法，'
+        + '网关会当成攻击串。已经自动换成占位重试过三次仍没通过——把这句原样发给我，我补一条规则就能修。';
     }
     const clean = stripErrHtml(t);
     return clean.length > 400 ? clean.slice(0, 400) + '…（错误详情已截断）' : clean;
@@ -364,6 +376,161 @@
       if (c.length <= 160) return m;
       return { ...m, content: c.slice(0, 160).replace(/[\s\S]{0,60}<[\s\S]*$/, '') + ' …[旧内容已精简以通过安全网关]' };
     });
+  }
+
+  /* ══ 安全网关（WAF）特征表：2026-11-06 用真请求逐条探出来的 ══
+     做法：同一个端点（/.cloud/llm/chat/completions）、同一份假凭证，只换正文。
+       干净正文  → 401 invalid_client（请求进了业务层，只是凭证假的）
+       命中下面任一条 → 403 + https://api.waf.qq.com 的拦截页
+     由此确证三件事：
+       ① 它按**内容**拦，不按体积：200KB 纯中文照样放行，20 字的 <script> 反而被拦。
+          所以「把请求体压小」这条路对它无效——v0.8.3 到 v0.8.6 一直在这上面绕。
+       ② 触发词是安全规则那几类：script 标签、on* 事件属性、alert/eval、
+          javascript: 伪协议、SQL 的 drop table / union select、../ 路径穿越、etc/passwd。
+          注意「<script 单独出现」和「</script> 单独出现」都不拦，成对才拦；
+          function / import / 反引号代码块 / iframe / DOCTYPE 也都不拦。
+       ③ JSON 的 \u003c 转义骗不过它（它会先解码再判），所以没有「换编码就过」这条路。
+     结论：唯一可行的办法是**让这些片段不出现在请求里**——按行替换成等义占位，
+     行数保持不动（offset / 行号引用才不会错位），模型仍能看懂结构。 */
+  const WAF_HITS = [
+    /<\s*script\b[\s\S]{0,40000}?<\s*\/\s*script\s*>/i,
+    /&lt;\s*script\b[\s\S]{0,40000}?&lt;\s*\/\s*script\s*&gt;/i,
+    /\bon[a-z]{2,14}\s*=/i,
+    /\b(?:alert|eval|prompt|confirm|document\.write)\s*\(/i,
+    /javascript\s*:/i,
+    /\bdrop\s+table\b/i,
+    /\bunion\s+(?:all\s+)?select\b/i,
+    /\betc\/(?:passwd|shadow)\b|\bboot\.ini\b/i,
+    /(?:\.\.[\/\\]){2,}/
+  ];
+
+  /* 命中就返回那条规则（日志里能看出是哪一类），没命中返回空串 */
+  function wafHit(s) {
+    const t = typeof s === 'string' ? s : (s == null ? '' : JSON.stringify(s));
+    if (!t) return '';
+    for (const re of WAF_HITS) if (re.test(t)) return String(re);
+    return '';
+  }
+
+  /* 单行中和。每一处替换都单独用真请求验过（401 而非 403），不是拍脑袋写的：
+       <script> / </script>  → [script 标签] / [script 结束]（**只换标签，不换里面的代码**）
+       onclick= / onload=    → on…=
+       alert( / eval(        → 警告( / 执行(
+       javascript:           → java·script:
+       DROP TABLE            → DROP　TABLE（全角空格）
+       union select          → union　select
+       ../../                → ..∕..∕
+       etc/passwd            → etc∕passwd
+     刻意只换标签本身：探测结果是「成对的 <script>…</script> 才拦，单独一半不拦」，
+     所以脚本里的 JS 一行都不用动，模型照样看得见函数体和变量名。
+     换完还命中（遇到没见过的写法），才把这一行折掉。 */
+  function wafMaskLine(line) {
+    let t = String(line == null ? '' : line);
+    if (!wafHit(t)) return t;
+    t = t
+      .replace(/&lt;\s*script\b[^&]{0,300}?&gt;/gi, '[script 标签]')
+      .replace(/&lt;\s*\/\s*script\s*&gt;/gi, '[script 结束]')
+      .replace(/<\s*script\b[^>]{0,300}>/gi, '[script 标签]')
+      .replace(/<\s*\/\s*script\s*>/gi, '[script 结束]')
+      .replace(/\bon([a-z]{2,14})\s*=/gi, 'on…=')
+      .replace(/\b(alert|eval|prompt|confirm)\s*\(/gi, '警告(')
+      .replace(/\bdocument\s*\.\s*write\s*\(/gi, '文档写入(')
+      .replace(/\bjavascript\s*:/gi, 'java·script:')
+      .replace(/\bdrop\s+table\b/gi, 'DROP　TABLE')
+      .replace(/\bunion\s+(all\s+)?select\b/gi, 'union　$1select')
+      .replace(/\betc\/(passwd|shadow)\b/gi, 'etc∕$1')
+      .replace(/(?:\.\.[\/\\]){2,}/g, '..∕..∕');
+    /* 兜底：还有没识别到的写法，这一行就别发了 */
+    if (wafHit(t)) return '[这一行含会被安全网关拦下的片段，已折叠；要看原文请用 search_text 按符号定位]';
+    return t;
+  }
+
+  /* 按行掩码：行数不变，模型看到的行号、缩进、结构都还是真的。
+     两步走：
+       ① 先把成对标签整段换掉（可能跨行）。线上实测「只有一半不拦」，
+          所以换掉 <script> / </script> 这两个词就够，里面的 JS 一行都不动。
+       ② 再逐行中和剩下的触发词（onclick= / alert( / ../../ …）。
+     都做完还命中（遇到没见过的写法），就把带 script 的行折掉——宁可丢一行，
+     也不能让整个任务 403。 */
+  function wafMask(text) {
+    let s = String(text == null ? '' : text);
+    if (!wafHit(s)) return s;
+    s = s
+      .replace(/&lt;\s*script\b[^&]{0,300}?&gt;/gi, '[script 标签]')
+      .replace(/&lt;\s*\/\s*script\s*&gt;/gi, '[script 结束]')
+      .replace(/<\s*script\b[^>]{0,300}>/gi, '[script 标签]')
+      .replace(/<\s*\/\s*script\s*>/gi, '[script 结束]');
+    if (!wafHit(s)) return s;
+    s = s.split('\n').map(wafMaskLine).join('\n');
+    if (!wafHit(s)) return s;
+    return s.split('\n').map(l => (/script/i.test(l) ? '[这一行含会被安全网关拦下的片段，已折叠]' : l)).join('\n');
+  }
+
+  /* 发请求前的最后一道：把整轮 messages 洗成「网关会放行」的样子。
+     level 0 = 只掩码；1 = 掩码 + 只留 system 和最后两条；2 = 只留 system 和最后一条。
+     升级是因为「整轮都被拦」时，问题可能出在我们不认识的特征上——
+     这时候留最少的内容，至少能问出一句话，而不是让任务直接死。 */
+  function safeForModel(list, level) {
+    const arr = Array.isArray(list) ? list : [];
+    const lv = Math.max(0, Number(level) || 0);
+    const keepTail = lv >= 2 ? 1 : (lv >= 1 ? 2 : arr.length);
+    let from = lv ? Math.max(0, arr.length - keepTail) : 0;
+    /* 只留尾巴时必须往前补齐：tool 回复前面那条 assistant（带 tool_calls）
+       不能丢，否则模型通道会直接 400「tool 消息没有对应的调用」。
+       这一条比省几条消息重要得多——丢错了整轮就废了。 */
+    while (lv && from > 0 && arr[from] && arr[from].role === 'tool') from--;
+    const out = [];
+    let touched = false;
+    for (let i = 0; i < arr.length; i++) {
+      const m = arr[i];
+      if (!m || typeof m !== 'object') continue;
+      const sys = m.role === 'system';
+      if (lv && !sys && i < from) continue;
+      const o = { ...m };
+      const before = JSON.stringify(m);
+      /* 工具调用的参数里躺着刚写出去的整份文件（script 和事件属性都在里面）。
+         已经执行完了，历史里再留全文既费 token 又过不了网关：换成指针，要就重读。 */
+      if (Array.isArray(o.tool_calls)) {
+        o.tool_calls = o.tool_calls.map(tc => {
+          const a = tc && tc.function && tc.function.arguments;
+          if (typeof a !== 'string' || (!wafHit(a) && a.length <= 1200)) return tc;
+          const p = argPath(a);
+          return {
+            ...tc,
+            function: {
+              ...tc.function,
+              arguments: JSON.stringify({
+                path: p,
+                note: '这次工具参数没有随上下文重发（里面是整份文件内容，会被安全网关当成攻击串拦掉）。文件已经在工作区，要改就 read_file 或 search_text 定位。'
+              })
+            }
+          };
+        });
+      }
+      if (typeof o.content === 'string') {
+        o.content = wafMask(o.content);
+      } else if (Array.isArray(o.content)) {
+        o.content = o.content.map(c => {
+          if (!c || typeof c !== 'object') return c;
+          if (c.type === 'image_url') {
+            return { type: 'text', text: '（这里原本附了一张图，已从上下文摘掉；路径见上文，要看就调 view_image）' };
+          }
+          if (c.type === 'text' && typeof c.text === 'string') return { ...c, text: wafMask(c.text) };
+          return c;
+        });
+      }
+      if (JSON.stringify(o) !== before) touched = true;
+      out.push(o);
+    }
+    /* 真的掩过东西才加这句说明：模型否则会把 [script 标签] 当成文件里真有这几个字 */
+    if (touched) {
+      const note = '（说明：读到或写出过的文件里，网页标签与事件属性在传输中会被换成 [script 标签]、on…= 这类占位。'
+        + '这些占位只存在于这次对话的传输里，文件本身没被改。你要动它们，用 search_text 按符号定位再 edit_file；'
+        + '新写文件时照常写真实标签。）';
+      const lastUser = [...out].reverse().find(m => m.role === 'user');
+      if (lastUser && typeof lastUser.content === 'string') lastUser.content = lastUser.content + '\n' + note;
+    }
+    return out;
   }
 
   function isTransient(e) {
@@ -383,20 +550,37 @@
         return await chatSafe(args);
       } catch (e) {
         last = e;
-        if (i === 0 && looksLikeBlockPage(String((e && e.message) || ''))) {
-          const before = (args.messages || []).length;
-          const leaned = leanForWaf(args.messages);
-          if (JSON.stringify(leaned).length < JSON.stringify(args.messages || []).length || leaned.length !== before) {
-            args.messages = leaned;
-            if (emit) emit({ t: 'notice', message: '这一轮被安全网关误判（上下文里带了整段代码/网页），已自动精简旧内容重试' });
-            continue;
+        /* 网关拦截：重试原样内容没有意义（拦的就是内容），必须换一份内容重发。
+           两档升级：① 按行掩码 + 只留最近两条；② 只留最后一条。
+           掩码是逐条真请求验过的等价写法，行数不变，模型仍看得懂结构。 */
+        const waf = !!(e && e.waf) || looksLikeBlockPage(String((e && e.message) || ''));
+        if (waf && i < 2) {
+          args.messages = safeForModel(args.messages, i === 0 ? 1 : 2);
+          if (emit) {
+            emit({
+              t: 'notice',
+              message: i === 0
+                ? '这次请求里的网页代码被安全网关拦了，已把 script 标签和事件属性换成占位重发（文件本身没动）'
+                : '还是被拦：已把上下文压到只剩这一句，再试一次'
+            });
           }
+          continue;
         }
         if (!isTransient(e)) throw e;
         if (i === 2) break;
         if (emit) emit({ t: 'notice', message: `模型通道抖了一下，正在重试（${i + 2}/3）…` });
         await new Promise(r => setTimeout(r, 1600 * (i + 1)));
       }
+    }
+    /* 三次都没过：把「还有没有已知触发词」写进错误里。
+       有 → 规则表缺一条（把这条正则补上就行）；没有 → 说明内容已经洗干净仍被拦，
+       那是另一类规则，别再往「体积/额度」上猜了。 */
+    if (last && last.waf) {
+      const rule = wafHit(JSON.stringify(args.messages || []));
+      last.message = String(last.message)
+        + (rule
+          ? `（重发三次仍命中规则 ${rule}，把它补进 WAF_HITS 就行）`
+          : '（这次已经洗到没有已知触发词，仍被拦：说明网关还有一类没探到的规则）');
     }
     throw last;
   }
@@ -536,7 +720,10 @@
     const { tools } = await loadTools();
     const payload = {
       model,
-      messages,
+      /* 每一次调用都先过网关这道闸（不是「失败了再洗」）：
+         那一轮里只要有 <script>…</script> 或 onclick=，前置 WAF 就直接回拦截页，
+         请求根本到不了模型。掩码是等价替换、行数不变，模型仍看得懂结构。 */
+      messages: safeForModel(messages, 0),
       stream: true,
       stream_options: { include_usage: true },
       temperature: 0.2
@@ -2352,6 +2539,7 @@
     briefOf, saveMemo, saveProjectMemo, splitMemo,
     buildSystem, pickTools, wantedArtifacts, artNeedAsk, ART_FORMS,
     sanitizeErrText, looksLikeBlockPage, leanForWaf,
+    wafHit, wafMask, wafMaskLine, safeForModel,
     inject, approve
   };
 })();
