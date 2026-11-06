@@ -356,5 +356,26 @@ console.log('\n[11] 脏工作区：base 指不到确定版本就不许开修');
   git(REPO, 'checkout', '--', '.');
 }
 
+console.log('\n[12] 命令行：参数错了要当场报，不要发一个必然失败请求');
+{
+  const APP = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const heal = (args) => {
+    try {
+      execFileSync(process.execPath, ['scripts/heal.mjs', ...args, '--token', 'x', '--url', 'http://127.0.0.1:1'],
+        { cwd: APP, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      return { code: 0, out: '' };
+    } catch (e) {
+      return { code: e.status, out: String(e.stdout || '') + String(e.stderr || '') };
+    }
+  };
+  /* 省略 --new 和「--new ""」在参数上是同一件事，但前者是手滑、后者是意图。
+     实测踩过：一次演示漏了 --new，服务端当成「替换成空」，把一行代码删了一半，
+     而回执写着「替换 1 处」。 */
+  ok('edit 漏了 --new 当场拒', /要给 --new/.test(heal(['edit', '--key', 'k', '--path', 'lib/x.js', '--old', 'a']).out));
+  ok('瞎编的命令列出可用的', /不认识的命令/.test(heal(['rm-rf']).out));
+  ok('缺必填参数时说清楚缺哪个', /缺参数 --path/.test(heal(['read', '--key', 'k']).out));
+  ok('命令行不会自己去连（还没发请求就退了）', heal(['read', '--key', 'k']).code !== 0);
+}
+
 console.log('\n' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail ? 1 : 0);

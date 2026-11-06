@@ -100,7 +100,7 @@ for (const k of NEED[cmd]) {
 }
 
 const body = { action: cmd === 'list' ? 'list' : cmd, token: TOKEN };
-for (const k of ['sig', 'key', 'path', 'q', 'old', 'text', 'test', 'note', 'by', 'dir', 'glob', 'url']) {
+for (const k of ['sig', 'key', 'path', 'q', 'old', 'new', 'text', 'test', 'note', 'by', 'dir', 'glob', 'url']) {
   const v = arg(k);
   if (v && v !== 'true') body[k] = v;
 }
@@ -117,6 +117,12 @@ if (cmd === 'write') {
 if (has('full')) body.full = true;
 if (has('force')) body.force = true;
 if (has('all')) body.all = true;
+
+/* --new 必须显式给：漏掉它时服务端会当成「替换成空」，看起来像改成功了，
+   实际把那一行删掉了一半。（这条是实测出来的：一次演示把 PUBLIC_API 改成了 `new Set([);`） */
+if (cmd === 'edit' && !has('new')) {
+  die('edit 要给 --new', '要删掉这段就显式写 --new ""，不要靠省略——省略和「改成空」在参数上是同一件事，\n而它们出错的样子很难分辨。');
+}
 
 let res, data;
 try {
