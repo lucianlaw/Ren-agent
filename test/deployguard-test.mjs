@@ -125,6 +125,36 @@ console.log('\n[8] 名单要覆盖每一个会落盘的库');
   ok('RUNTIME_DIRS 含 workspace', RUNTIME_DIRS.includes('workspace'), RUNTIME_DIRS);
 }
 
+console.log('\n[9] 测试进程不许落到真实 data/（这条才是根因）');
+{
+  const { dataDir, isTestEntry } = await import('../lib/testdir.js');
+  const app = '/app/server.js';
+  const tst = '/app/test/foo-test.mjs';
+
+  ok('生产入口 → <app>/data/audit（和改动前一致，不能顺手改了生产行为）',
+    dataDir('AUDIT_DIR', 'audit', { entry: app, env: {} }) === path.join(ROOT, 'data', 'audit'),
+    dataDir('AUDIT_DIR', 'audit', { entry: app, env: {} }));
+  ok('测试入口 → 临时目录',
+    dataDir('AUDIT_DIR', 'audit', { entry: tst, env: {} }).startsWith(os.tmpdir()));
+  ok('显式环境变量优先（测试想指定就指定）',
+    dataDir('AUDIT_DIR', 'audit', { entry: tst, env: { AUDIT_DIR: '/tmp/z' } }) === path.resolve('/tmp/z'));
+  ok('production 入口认得出不是测试', isTestEntry(app) === false);
+  ok('test 入口认得出是测试', isTestEntry(tst) === true);
+  ok('名字里带 test 但不是 test/ 目录的不算（server.js 里跑的不受影响）',
+    isTestEntry('/app/lib/testdir.js') === false);
+
+  /* 五个会落盘的库都得走这条兜底：漏一个，跑一遍测试就往部署目录里写一截 */
+  const LIBS = {
+    'lib/audit.js': 'AUDIT_DIR', 'lib/incident.js': 'INCIDENT_DIR',
+    'lib/ticket.js': 'TICKET_DIR', 'lib/proof.js': 'isTestEntry()',
+    'lib/repair.js': 'isTestEntry()'
+  };
+  for (const [f, token] of Object.entries(LIBS)) {
+    const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+    ok(`${f} 接了测试兜底`, src.includes(token), token);
+  }
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`\n${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
