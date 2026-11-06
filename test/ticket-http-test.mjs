@@ -8,7 +8,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
+import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -29,6 +30,35 @@ const collided = (st) => st === 403 || st === 404 || st === 400;
 
 const KEY = 'ticket-test-key';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tk-http-'));
+
+/* 一个真的仓库：一个提交带 bug，下一个提交修好并附测试。
+   /api/ticket/prove 要检 worktree、跑两遍测试，不能拿本项目当靶子
+   （会往真实 .git/worktrees 里塞东西，还会跑几分钟）。 */
+function mkProofRepo() {
+  const dir = path.join(TMP, 'repo');
+  fs.mkdirSync(path.join(dir, 'lib'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'test'), { recursive: true });
+  const g = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  g('init', '-q');
+  g('config', 'user.email', 'proof@test');
+  g('config', 'user.name', 'proof');
+  fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}');
+  fs.writeFileSync(path.join(dir, 'lib', 'x.js'), 'export function add(a, b) { return a - b; }\n');
+  g('add', '-A'); g('commit', '-q', '-m', 'base');
+  fs.writeFileSync(path.join(dir, 'lib', 'x.js'), 'export function add(a, b) { return a + b; }\n');
+  fs.writeFileSync(path.join(dir, 'test', 'x-test.mjs'), [
+    "import { add } from '../lib/x.js';",
+    'let pass = 0, fail = 0;',
+    "const ok = (n, c) => { if (c) { pass++; console.log('  ✓ ' + n); } else { fail++; console.log('  ✗ ' + n); } };",
+    "ok('1+2=3', add(1, 2) === 3);",
+    "console.log('\\n' + pass + ' 通过 / ' + fail + ' 失败');",
+    'process.exit(fail ? 1 : 0);',
+    ''
+  ].join('\n'));
+  g('add', '-A'); g('commit', '-q', '-m', 'fix: 加法');
+  return dir;
+}
+const PROOF_REPO = mkProofRepo();
 let child = null;
 let PORT = 0;
 
@@ -64,6 +94,8 @@ async function boot() {
         AUDIT_DIR: path.join(TMP, 'audit'),
         INCIDENT_DIR: path.join(TMP, 'inc'),
         TICKET_DIR: path.join(TMP, 'tickets'),
+        PROOF_DIR: path.join(TMP, 'proofs'),
+        PROOF_ROOT: PROOF_REPO,
         BACKUP_DIR: path.join(TMP, 'bk')
       }
     });
@@ -194,8 +226,27 @@ try {
       const noNote = await postJson('/api/ticket/settle', { sig: t0.sig, state: 'fixed', note: '' });
       ok('fixed 不带说明被拒', noNote.status === 409, noNote.status);
 
+      /* 自证闸门：没有红→绿证据，不许说「修好了」。
+         这是整条链路的终点线，所以要在真 HTTP 上也验一遍，
+         而不是只信单元测试里那个函数被调用了。 */
+      const noProof = await postJson('/api/ticket/settle', { sig: t0.sig, state: 'fixed', by: 'ren-agent', note: '补了磁盘空间检查' });
+      const npj = await noProof.json();
+      ok('没有证据 → 拒绝 fixed（409）', noProof.status === 409, noProof.status);
+      ok('拒绝理由教了怎么补', /prove|自证/.test(String(npj.error || '')), npj.error);
+
+      /* 塞一份合格证据，再结算 */
+      const proofKey = crypto.createHash('sha1').update(t0.sig).digest('hex').slice(0, 16);
+      fs.mkdirSync(path.join(TMP, 'proofs'), { recursive: true });
+      fs.writeFileSync(path.join(TMP, 'proofs', proofKey + '.json'), JSON.stringify({
+        ok: true, strong: true, sig: t0.sig, test: 'test/demo-test.mjs',
+        base: 'aaaaaaa', fix: 'bbbbbbb',
+        red: { exit: 1, kind: 'assert', pass: 1, fail: 1 },
+        green: { exit: 0, kind: 'pass', pass: 2, fail: 0 },
+        at: new Date().toISOString(), ms: 800, why: ''
+      }));
+
       const f = await postJson('/api/ticket/settle', { sig: t0.sig, state: 'fixed', by: 'ren-agent', note: '补了磁盘空间检查' });
-      ok('claimed → fixed 成功', f.ok && f.status === 200, f.status);
+      ok('有证据 → fixed 成功', f.ok && f.status === 200, f.status);
 
       /* 关键：重新拉一次列表，读到的必须是新状态——这说明是落盘生效，
          不是内存里改了改 */
@@ -204,6 +255,48 @@ try {
       const tt = after.tickets.find(t => t.sig === t0.sig);
       eq('记下了领取人', tt.claimedBy, 'ren-agent');
       ok('历史里有两步', tt.history.length >= 2, tt.history);
+      ok('列表里标出「有证据」', tt.hasProof === true, tt.hasProof);
+
+      /* 详情里要能看到证据原文：复核的人隔一周来，得能自己判断红是真的假的 */
+      const detail = await (await get(`/api/ticket?id=${tt.key}`)).json();
+      ok('详情带着证据', detail.ticket && detail.ticket.proof && detail.ticket.proof.ok === true, detail.ticket && detail.ticket.proof);
+      ok('证据里有红的原因，不是一句「已通过」', detail.ticket.proof.red.kind === 'assert', detail.ticket.proof.red);
+    }
+
+    console.log('\n[5b] 自证端点：真检 worktree、真跑两遍测试');
+    {
+      const list = await (await get('/api/tickets')).json();
+      const t = list.tickets[0];
+
+      const noKey = await postJson('/api/ticket/prove', { sig: t.sig, test: 'test/x-test.mjs' }, false);
+      ok('无 key → 403', noKey.status === 403, noKey.status);
+
+      const noTest = await postJson('/api/ticket/prove', { sig: t.sig });
+      ok('不给 test → 400', noTest.status === 400, noTest.status);
+
+      const badPath = await postJson('/api/ticket/prove', { sig: t.sig, test: '../etc/passwd' });
+      ok('路径穿越被拒（不许把它变成一次任意子进程调用）', badPath.status === 409 || badPath.status === 400, badPath.status);
+
+      const okRes = await postJson('/api/ticket/prove', { sig: t.sig, test: 'test/x-test.mjs' });
+      const okJson = await okRes.json();
+      ok('证明通过 → 200', okRes.status === 200, { st: okRes.status, why: okJson.proof && okJson.proof.why });
+      ok('证据判为强红', okJson.proof && okJson.proof.strong === true, okJson.proof && okJson.proof.red);
+      ok('证据落盘了', okJson.saved === true, okJson.saved);
+
+      /* 落盘之后，结算才放行——这条链路要真的接上 */
+      const claim2 = await postJson('/api/ticket/claim', { sig: t.sig, by: 'ren-agent' });
+      ok('先领取', claim2.status === 200, claim2.status);
+      const st = await postJson('/api/ticket/settle', { sig: t.sig, state: 'fixed', note: '证明过了' });
+      ok('证明过的单子能结算', st.status === 200, st.status);
+
+      const bogus = await postJson('/api/ticket/prove', { sig: t.sig, test: 'test/x-test.mjs', fix: 'nosuchrev' });
+      ok('提交不存在 → 409 且说明原因', bogus.status === 409, bogus.status);
+
+      /* 证明过程不能动那个仓库 */
+      const wt = execFileSync('git', ['worktree', 'list'], { cwd: PROOF_REPO, encoding: 'utf8' }).trim();
+      eq('没留下 worktree', wt.split('\n').length, 1);
+      const st2 = execFileSync('git', ['status', '--porcelain'], { cwd: PROOF_REPO, encoding: 'utf8' }).trim();
+      eq('证明没弄脏仓库', st2, '');
     }
 
     console.log('\n[6] 判掉噪音：默认不出现，但能查回来');

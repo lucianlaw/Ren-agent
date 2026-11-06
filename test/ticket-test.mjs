@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -21,10 +22,25 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ticket-'));
 process.env.INCIDENT_DIR = path.join(TMP, 'incidents');
 process.env.AUDIT_DIR = path.join(TMP, 'audit');
 process.env.TICKET_DIR = path.join(TMP, 'tickets');
+process.env.PROOF_DIR = path.join(TMP, 'proofs');
 
 const I = await import('../lib/incident.js');
 const A = await import('../lib/audit.js');
 const T = await import('../lib/ticket.js');
+
+/* 造一份证据（结算 fixed / verified 时会查它）。
+   这里直接写文件而不是真跑一遍证明：真跑要检 worktree、跑两遍测试，
+   那是 proof-test 的活。这一层只验「有没有证据」这道闸门。 */
+function giveProof(sig, strong = true) {
+  const key = crypto.createHash('sha1').update(String(sig)).digest('hex').slice(0, 16);
+  fs.mkdirSync(process.env.PROOF_DIR, { recursive: true });
+  fs.writeFileSync(path.join(process.env.PROOF_DIR, key + '.json'), JSON.stringify({
+    ok: true, strong, sig, test: 'test/x-test.mjs', base: 'aaaaaaa', fix: 'bbbbbbb',
+    red: { exit: 1, kind: strong ? 'assert' : 'load', pass: 1, fail: strong ? 1 : 0 },
+    green: { exit: 0, kind: 'pass', pass: 2, fail: 0 },
+    at: new Date().toISOString(), ms: 100, why: ''
+  }));
+}
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra) => {
@@ -114,12 +130,23 @@ console.log('\n[4] 状态机：不许跳步');
   ok('fixed 不写说明被拒', noNote.ok === false, noNote);
   ok('说明里要求「一句说明」', /说明/.test(noNote.error), noNote.error);
 
+  /* 说明写了、但没自证材料 —— 仍然不许说「修好了」。
+     这一条是整条链路的终点线：没有红→绿，前面所有步骤都只是「它说」。 */
+  const noProof = T.settle(sig, { state: 'fixed', by: 'ren-agent', note: '参数校验漏了空数组' });
+  ok('有说明但没证据 → 仍被拒', noProof.ok === false, noProof.error);
+  ok('拒绝理由指向自证', /自证|prove/.test(String(noProof.error)), noProof.error);
+
+  giveProof(sig);
   const f = T.settle(sig, { state: 'fixed', by: 'ren-agent', note: '参数校验漏了空数组' });
-  ok('claimed → fixed 可以', f.ok === true, f);
+  ok('claimed → fixed 可以（带证据）', f.ok === true, f);
 
   const back = T.settle(sig, { state: 'claimed', by: 'me', note: '复核不过：只改了表象' });
   ok('fixed → claimed 可以（复核打回）', back.ok === true, back);
 
+  const noProof2 = T.settle(sig, { state: 'fixed', by: 'ren-agent', note: '这次补了测试' });
+  ok('打回后证据作废，再结算要重新证明', noProof2.ok === false, noProof2.error);
+
+  giveProof(sig);
   T.settle(sig, { state: 'fixed', by: 'ren-agent', note: '这次补了测试' });
   const v = T.settle(sig, { state: 'verified', by: 'me', note: '复核通过，已上线' });
   ok('fixed → verified 可以', v.ok === true, v);
@@ -156,6 +183,7 @@ console.log('\n[6] 复发：修好过又犯了，要显式标出来');
   const t0 = Date.now() - 10 * 24 * 3600e3;   // 10 天前
   I.report({ code: 'E_STATE', route: '/api/state', where: 'write', msg: 'db locked' }, t0);
   T.claim(sig, 'ren-agent');
+  giveProof(sig);
   T.settle(sig, { state: 'fixed', by: 'ren-agent', note: '加了重试' });
   T.settle(sig, { state: 'verified', by: 'me', note: '通过' });
 

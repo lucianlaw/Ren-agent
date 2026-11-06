@@ -36,6 +36,7 @@ import { toolAudit, writeAudit, readAudit, auditStats, sweepAudit } from './lib/
 import * as METRICS from './lib/metrics.js';
 import * as INCIDENT from './lib/incident.js';
 import * as TICKET from './lib/ticket.js';
+import { runProof, saveProof, proofStats } from './lib/proof.js';
 import * as DEVINFO from './lib/devinfo.js';
 import { addAlert, listAlerts, ackAlerts, ADMIN_EMAIL, ALERTS_KEY } from './lib/alerts.js';
 import { probeRuntime, runtimeWord, hardenAll, uidForScope, runIsolated } from './lib/sandbox.js';
@@ -348,6 +349,12 @@ const AUTH_STATS = { verified: 0, fk: 0, rejected: 0, lastCode: '' };
    否则「有保留期」和「没保留期」在页面上看不出区别。 */
 const AUDIT_SWEEP = { last: null, timer: null };
 
+/* 自证同一时间只跑一次。
+   并行会抢 .git/worktrees：两个 worktree add 撞上同一个索引锁，
+   表现是随机失败（「检出基线版失败」），而且只在有人同时点两次时出现——
+   那种 bug 没人能靠看日志想明白。 */
+const PROOF_BUSY = { on: false, since: '' };
+
 /* ── 未捕获异常的兜底 ──
    这里有个取舍必须写出来：Node 默认让未捕获异常杀掉进程。我们不杀，只记录。
    因为这台机器上没有替它重启的看守，进程死了就等于服务死了，连日志都读不到——
@@ -503,7 +510,7 @@ const OPTIONAL_AUTH = new Set(['/api/alerts', '/api/alerts/ack', '/api/sandbox-c
   /* 工单：只认运维 key（handler 里 adminOK）。和 incidents 一样放这里而不是
      直接删掉身份闸门——闸门照常验一遍，验不过也交下去，这样 cron 拿 key
      就能 curl，不必先有浏览器登录态。 */
-  '/api/tickets', '/api/ticket', '/api/ticket/claim', '/api/ticket/settle']);
+  '/api/tickets', '/api/ticket', '/api/ticket/claim', '/api/ticket/settle', '/api/ticket/prove']);
 
 
 /* ── 内部调用凭证 ──
@@ -821,7 +828,7 @@ async function route(req, res) {
         /* 工单现状：open 是「没人管」，fixed 是「等复核」。
            fixed 这个数就是整条链路的瓶颈——它积起来，说明修的速度超过复核的速度，
            那时候该加的是复核，不是让它多修。 */
-        tickets: withKey ? TICKET.ticketStats() : undefined,
+        tickets: withKey ? { ...TICKET.ticketStats(), proof: proofStats(), proving: PROOF_BUSY.on } : undefined,
         /* 状态层：mode 是 memory 就说明这次降级了——磁盘上什么都没存。
            reaped 是本次启动收掉的中断任务数，非 0 意味着上次是非正常退出。 */
         state: withKey ? state.stats() : { mode: state.modeOf() },
@@ -1821,6 +1828,38 @@ async function route(req, res) {
       if (!sig) return send(res, 400, { ok: false, error: '要给 sig 或 key' });
       const r = TICKET.settle(sig, { state: b.state, by: b.by, note: b.note });
       return send(res, r.ok ? 200 : 409, r);
+    }
+
+    /* ── 自证 ──
+       这张端点会真的检两个临时 worktree 并跑两遍测试，所以它比别的都慢
+       （几秒到几分钟）。三条克制：
+         1. 全程 await 异步子进程，不 execSync —— 服务是单线程的，
+            同步跑会把所有用户一起卡住：修 bug 的动作本身变成一次故障。
+         2. 全局串行。两个证明同时跑会抢 .git/worktrees，互相把对方的
+            worktree 删掉，症状是随机失败，极难查。
+         3. 只在真的 git 仓库里能用；部署包里没有 .git，那时会明确报错
+            而不是给一个假的绿。 */
+    if (u.pathname === '/api/ticket/prove' && req.method === 'POST') {
+      if (!adminOK(req, u)) return send(res, 403, { ok: false, error: 'key 不对或不是管理员' });
+      const b = await readBody(req, 8 * 1024);
+      const sig = String(b.sig || b.id || '');
+      const test = String(b.test || '');
+      if (!test) return send(res, 400, { ok: false, error: '要给 test（例：test/foo-test.mjs）' });
+      if (PROOF_BUSY.on) {
+        return send(res, 429, { ok: false, error: `已有一次证明在跑（${PROOF_BUSY.since} 开始），等它完再提交另一个` });
+      }
+      PROOF_BUSY.on = true;
+      PROOF_BUSY.since = new Date().toISOString();
+      try {
+        const proof = await runProof({ sig, test, fix: String(b.fix || 'HEAD'), base: String(b.base || '') });
+        const saved = sig ? saveProof(proof) : false;
+        if (!sig) proof.saved = false;
+        else proof.saved = saved;
+        return send(res, proof.ok ? 200 : 409, { ok: proof.ok, proof, saved });
+      } finally {
+        PROOF_BUSY.on = false;
+        PROOF_BUSY.since = '';
+      }
     }
 
     /* ── 运维：问题单清扫 ──
