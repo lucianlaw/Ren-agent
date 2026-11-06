@@ -1471,6 +1471,11 @@ body.dark .mem-edit-ta{background:#1b2129;color:#e4e9ef;border-color:#333a45}
 .lim-grid .f{margin-bottom:0}
 .lim-grid .f input{margin-top:4px}
 .lim-note{font-size:10.5px;color:var(--mute);line-height:1.7;margin:6px 0 0}
+/* 数字组合本身没问题、但一定会中途撞墙时，这句话得看得见 */
+.lim-note.warn{color:#a16207}
+.quota-acts{display:flex;align-items:center;gap:10px;margin-top:8px}
+.quota-msg{font-size:10.5px;color:var(--mute);line-height:1.5}
+.quota-msg.bad{color:#b91c1c}
 .ct-form{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
 .ct-form input,.ct-form select{
   font-family:inherit;font-size:11.5px;padding:6px 8px;border:1px solid var(--line);

@@ -245,6 +245,61 @@ console.log('\n[4] token：发起前就拒');
     eq('错误码是 token_quota', rb.code, 'token_quota');
     ok('给出重置时间', /重置/.test(String(rb.error)), rb.error);
     ok('附带完整额度状态', !!(rb.quota && rb.quota.day), rb.quota);
+    /* 这段话必须说清是「账号额度」而不是「单任务上限」：线上真出过
+       「我改了额度，它说额度用完了」——他改的是单任务上限，拦他的是账号额度。 */
+    ok('错误里点明是账号额度而不是单任务上限', /账号额度/.test(String(rb.error)) && /单任务上限/.test(String(rb.error)), rb.error);
+    ok('错误里指了去哪改', /设置 → 账号额度/.test(String(rb.error)), rb.error);
+    eq('402 带 fix=quota（前端据此挂「去调额度」）', rb.fix, 'quota');
+
+    /* ── 自己改额度：改完立刻能跑 ──
+       这就是老板报的那件事的回归：改了额度就得算数，不能等重启、等零点。 */
+    const up = await call('/api/quota/limits', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tokenDaily: 200000, tokenMonthly: 1000000 })
+    });
+    const ub = await up.json();
+    eq('本人能改自己的日额度（200）', up.status, 200);
+    eq('返回的新上限就是提交的数', ub.limits && ub.limits.tokenDaily, 200000);
+    const q2 = await jget('/api/quota');
+    eq('立刻生效：/api/quota 读到的是新值', q2.tokens.day.limit, 200000);
+    ok('摘要不再是「已用完」', !/已用完/.test(String(q2.summary)), q2.summary);
+
+    const run3 = await fetch(BASE + '/api/run', {
+      method: 'POST',
+      headers: { Origin: BASE, 'x-ren-auth': 'Bearer tok-qa', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: 'tok-qa', staff: STAFF, task: { id: 'r3', goal: '提额之后接着跑' } })
+    });
+    eq('提额之后同一个账号能继续发起（200）', run3.status, 200);
+    await run3.text();
+    await sleep(1200);
+
+    /* 参数里的 scope 对普通登录用户无效：否则谁都能给别人改额度 */
+    const other = 'f'.repeat(32);
+    const hijack = await call('/api/quota/limits', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope: other, tokenDaily: 1 })
+    });
+    const hb = await hijack.json();
+    ok('传别人的 scope 只改到自己身上', hijack.status === 200 && hb.limits.tokenDaily === 1, hb);
+    const adminSee = await call(`/api/admin/quota?key=${KEY}`).then(r => r.json());
+    ok('别人的额度没被改', !adminSee.overrides[other], adminSee.overrides[other]);
+    /* 改回 1 之后自己也被锁住了，恢复一下，别影响后面的用例 */
+    await call('/api/quota/limits', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tokenDaily: 200000, tokenMonthly: 1000000 })
+    });
+
+    const tooBig = await call('/api/quota/limits', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tokenDaily: 100000000000 })
+    });
+    eq('大得离谱的额度被拒（400）', tooBig.status, 400);
+
+    const bad = await call('/api/quota/limits', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tokenDaily: -5 })
+    });
+    eq('负数被拒（400）', bad.status, 400);
   }
 }
 

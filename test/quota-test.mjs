@@ -189,8 +189,24 @@ console.log('[9] 报告与运维视图');
   ok('轻量统计不碰磁盘（只读 JSON）', quick.accounts >= 2, quick);
 }
 
-console.log('[10] 不写真实 data/');
+console.log('[10] 额度表被外部写了，进程要认');
 {
+  /* 备份恢复会把 _limits.json 整个换掉，命令行脚本也会写。
+     只信内存那一份时，表现是「明明改了额度、界面上还是旧的」，重启才好。 */
+  const f = q.__test.LIMITS_FILE;
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  const cur = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {};
+  cur[S1] = { ...(cur[S1] || {}), tokenDaily: 777777 };
+  fs.writeFileSync(f, JSON.stringify(cur, null, 2));
+  const t = new Date(Date.now() + 2000);
+  try { fs.utimesSync(f, t, t); } catch { /* 某些文件系统不支持，靠 mtime 变化也够 */ }
+  eq('外部写入的额度立刻生效', q.limitsOf(S1).tokenDaily, 777777);
+  ok('额度有天花板，不能改成无限大', q.setLimits(S1, { tokenDaily: 1e12 }).ok === false);
+  ok('正常范围内还是能改', q.setLimits(S1, { tokenDaily: 900000 }).ok === true);
+  eq('改完读回来是新值', q.limitsOf(S1).tokenDaily, 900000);
+}
+
+console.log('[11] 不写真实 data/');{
   const real = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', 'data', 'usage');
   ok('用量目录是临时目录', !process.env.REN_USAGE_DIR.startsWith(real), process.env.REN_USAGE_DIR);
   const realFiles = fs.existsSync(real) ? fs.readdirSync(real) : [];

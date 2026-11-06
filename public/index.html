@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ren Agent</title>
-<link rel="stylesheet" href="./app.css?v=20261105M">
-<link rel="stylesheet" href="./admin.css?v=20261105M">
+<link rel="stylesheet" href="./app.css?v=20261106A">
+<link rel="stylesheet" href="./admin.css?v=20261106A">
 <script>
 /* 首帧就定好深浅色：启动屏是第一个可见画面，不能先白后黑闪一下 */
 try { if (localStorage.getItem('boss.theme') === 'dark') document.documentElement.classList.add('dark'); } catch (e) {}
@@ -671,6 +671,20 @@ try { if (localStorage.getItem('boss.theme') === 'dark') document.documentElemen
       </div>
       <p class="lim-note" id="limTaskNote">一步 = 一次工具调用（读文件、写文件、跑命令都算）。按「读 → 做 → 验」估：简单交付 8–12 步，带改稿留 20 步以上。token 按累计输入 + 输出算，到线就停。</p>
 
+      <!-- 账号额度：跟上面那个「单任务上限」是两件事，这里必须写清楚，
+           否则又会有人改完上面那个、然后撞在下面这堵墙上。 -->
+      <h3 class="set-h">账号额度：一天 / 一个月总共能用多少</h3>
+      <p class="sub">上面管「这一次任务」，这里管「这个账号一天、一个月累计」。两边任何一个先到都会停，所以单任务上限设得比日额度还高是没有意义的。</p>
+      <div class="lim-grid">
+        <label class="f">每天<input id="quotaDay" type="number" min="10000" step="100000" value="5000000"></label>
+        <label class="f">每月<input id="quotaMonth" type="number" min="100000" step="1000000" value="60000000"></label>
+      </div>
+      <p class="lim-note" id="quotaNote">正在读今天的用量…</p>
+      <div class="quota-acts">
+        <button class="btn tiny" id="quotaSave" type="button">保存额度</button>
+        <span class="quota-msg" id="quotaMsg"></span>
+      </div>
+
       <h3 class="set-h">项目：每节几步、整场多少 token</h3>
       <div class="lim-grid">
         <label class="f">每节最多几步<input id="maxProjSteps" type="number" min="2" max="30" step="1" value="6"></label>
@@ -963,23 +977,23 @@ try { if (localStorage.getItem('boss.theme') === 'dark') document.documentElemen
   </div>
 </div>
 
-<script src="./cloud-config.js?v=20261105M"></script>
-<script src="./cloud.js?v=20261105M"></script>
-<script src="./session.js?v=20261105M"></script>
-<script src="./localfs.js?v=20261105M"></script>
-<script src="./roles.js?v=20261105M"></script>
-<script src="./states.js?v=20261105M"></script>
-<script src="./contract.js?v=20261105M"></script>
-<script src="./traits.js?v=20261105M"></script>
-  <script src="./nameorder.js?v=20261105M"></script>
-<script src="./attach.js?v=20261105M"></script>
-<script src="./voice.js?v=20261105M"></script>
-<script src="./judge.js?v=20261105M"></script>
-<script src="./evalkit.js?v=20261105M"></script>
-<script src="./agent.js?v=20261105M"></script>
-<script src="./meeting.js?v=20261105M"></script>
-<script src="./review.js?v=20261105M"></script>
-<script src="./app.js?v=20261105M"></script>
-<script src="./admin.js?v=20261105M"></script>
+<script src="./cloud-config.js?v=20261106A"></script>
+<script src="./cloud.js?v=20261106A"></script>
+<script src="./session.js?v=20261106A"></script>
+<script src="./localfs.js?v=20261106A"></script>
+<script src="./roles.js?v=20261106A"></script>
+<script src="./states.js?v=20261106A"></script>
+<script src="./contract.js?v=20261106A"></script>
+<script src="./traits.js?v=20261106A"></script>
+  <script src="./nameorder.js?v=20261106A"></script>
+<script src="./attach.js?v=20261106A"></script>
+<script src="./voice.js?v=20261106A"></script>
+<script src="./judge.js?v=20261106A"></script>
+<script src="./evalkit.js?v=20261106A"></script>
+<script src="./agent.js?v=20261106A"></script>
+<script src="./meeting.js?v=20261106A"></script>
+<script src="./review.js?v=20261106A"></script>
+<script src="./app.js?v=20261106A"></script>
+<script src="./admin.js?v=20261106A"></script>
 </body>
 </html>

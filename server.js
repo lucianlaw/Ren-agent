@@ -1155,7 +1155,10 @@ async function route(req, res) {
           output: qc.error, verify: { pass: false, why: '账号额度用尽' }, ...clientMeta(req)
         });
         return send(res, 402, {
-          ok: false, code: qc.code, where: qc.where || '', error: qc.error, quota: qc.status
+          ok: false, code: qc.code, where: qc.where || '', error: qc.error,
+          /* fix=quota：前端据此在旁边挂一个「去调额度」按钮，
+             而不是让人对着一句「用完了」自己找门。 */
+          fix: qc.fix || '', limits: (qc.status && qc.status.limits) || limitsOf(scope), quota: qc.status
         });
       }
 
@@ -1264,11 +1267,11 @@ async function route(req, res) {
               const r = recordTokens(scope, u || {});
               if (!r.exceeded) return;
               const why = r.exceeded === 'day'
-                ? `今天的 token 额度用完了（${r.day.used}/${r.day.limit}）`
-                : `这个月的 token 额度用完了（${r.month.used}/${r.month.limit}）`;
+                ? `今天的账号额度用完了（${r.day.used.toLocaleString('zh-CN')} / ${r.day.limit.toLocaleString('zh-CN')} token）`
+                : `这个月的账号额度用完了（${r.month.used.toLocaleString('zh-CN')} / ${r.month.limit.toLocaleString('zh-CN')} token）`;
               if (liveRun) {
                 liveRun.quotaStopped = why;
-                liveRun.bus.push({ t: 'error', message: `账号额度：${why}，任务已停止。额度重置后可以继续。` });
+                liveRun.bus.push({ t: 'error', message: `账号额度：${why}，任务停在这一步。在 设置 → 账号额度 里调高上限，然后点「继续跑」就能接着往下走。` });
                 liveRun.abort(`账号额度：${why}`);
               }
               toolAudit({
@@ -1449,6 +1452,33 @@ async function route(req, res) {
             ? `今天还剩 ${t.day.remaining} token，磁盘 ${fmtBytes(d.used)} / ${fmtBytes(d.limit)}`
             : `今天的 token 额度已用完，明天零点重置`)
       });
+    }
+
+    /* ── 改自己的额度 ──
+       存在的理由：账号额度原来是**只能看、不能改**的。界面上唯一叫「额度」的
+       输入框是单任务上限（settings.maxTokens），它跟这里完全是两回事。于是
+       老板提了单任务上限、又撞在这堵墙上，看到的就是「我改了额度，它说额度
+       用完了」——一次白改，而且没有任何地方能改对。
+       现在把这条打通：本人改自己的，运维 key 可以改任意账号。
+       上界在 setLimits 里（CEIL），不是无限制——否则这个闸只剩一句注释。 */
+    if (u.pathname === '/api/quota/limits' && req.method === 'POST') {
+      const b = await readBody(req, 16 * 1024);
+      const adminKeyGiven = String(u.searchParams.get('key') || req.headers['x-ren-admin'] || '');
+      const byKey = !!(ALERTS_KEY && keyEq(adminKeyGiven, ALERTS_KEY));
+      /* 参数里的 scope 只对运维 key 生效。普通登录用户传了也没用——
+         否则任何人都能给别人的账号改额度。 */
+      const scope = (byKey && b.scope) ? String(b.scope) : scopeKey('');
+      if (!SCOPE_RE.test(scope)) return send(res, 400, { ok: false, error: '工作区标识不合法' });
+      const r = setLimits(scope, { tokenDaily: b.tokenDaily, tokenMonthly: b.tokenMonthly, diskMb: b.diskMb });
+      if (!r.ok) return send(res, 400, r);
+      toolAudit({
+        scope, name: 'quota.limits',
+        args: { tokenDaily: b.tokenDaily, tokenMonthly: b.tokenMonthly, diskMb: b.diskMb },
+        custom: null, category: 'none', level: 'default', ok: true, blocked: false, ms: 0,
+        output: `额度改为 ${JSON.stringify(r.limits)}${byKey ? '（运维 key）' : '（本人）'}`,
+        verify: { pass: true }, ...clientMeta(req)
+      });
+      return send(res, 200, { ok: true, limits: r.limits, quota: quotaReport(scope) });
     }
 
     /* 自己解冻：清理完文件之后不该还要等管理员。

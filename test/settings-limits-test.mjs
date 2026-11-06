@@ -143,5 +143,25 @@ ok('两处 toolLoop 都走 nodeBudget', (meetNoComment.match(/budget:\s*nodeBudg
 ok('budCap 默认值跟设置走', /return limOf\(\)\.tokens;/.test(meetNoComment));
 ok('进度卡的分母也用 nodeSteps', /total:\s*nodeSteps\(''\)/.test(meetNoComment));
 
+/* ── 9. 账号额度：跟单任务上限不是一回事，但改它必须真的生效 ──
+ * 线上报过「我改了额度，它说额度用完了」：他改的是单任务上限，拦他的是
+ * 账号日额度，而账号额度当时**没有任何地方能改**。这一节就盯这条链路。 */
+console.log('[9] 账号额度');
+{
+  const css = read('../public/app.css');
+  ok('设置里有账号额度这一段', /账号额度：一天 \/ 一个月总共能用多少/.test(html));
+  ok('有日 / 月两个输入', /id="quotaDay"/.test(html) && /id="quotaMonth"/.test(html));
+  ok('有独立的保存按钮', /id="quotaSave"/.test(html));
+  ok('正文写明它和单任务上限的区别', /管「这一次任务」[\s\S]{0,40}管「这个账号一天/.test(html));
+  ok('打开设置就拉真实用量（不是缓存）', /refreshOutDirRow\(\);[\s\S]{0,200}refreshQuotaBox\(\)/.test(appJs));
+  ok('保存走 /api/quota/limits', /\/api\/quota\/limits/.test(appJs));
+  ok('只按底部「保存」也会把改过的额度一起提交',
+    /quotaLoaded\.day && qd > 0[\s\S]{0,120}saveQuotaBox\(\)/.test(appJs));
+  ok('读不到额度时不留白，给一句人话', /读不到额度：/.test(appJs));
+  ok('被额度拦住时给一颗「去调额度」', /\/账号额度用完了\|token 额度用完了\//.test(appJs) && /data-quota-fix/.test(appJs));
+  ok('单任务上限高过日额度会当场提示', /比日额度还高/.test(appJs));
+  ok('提示颜色有别于普通说明', /\.lim-note\.warn\{/.test(css));
+}
+
 console.log(`\n${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

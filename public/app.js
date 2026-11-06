@@ -2446,6 +2446,34 @@ const VS_SCAN_SYS = [
   '每条格式：{"text":"一句话印象","kind":"good 或 watch","advice":"仅 watch 填，30 字内","tag":"风格|决策|表达|节奏|协作 之一"}'
 ].join('\n');
 
+/* 思考型模型：会先想一大段，正文可能一个字都不剩。
+   judge.js 里已经为同一件事写过一套判定（hy4-preview / hy3-x 实测都是正文 0 字），
+   这里直接复用，别再维护第二份正则。 */
+function vsIsThinking(id) {
+  /* 只认 window.JUDGE：judge.js 挂在 window 上，不保证有同名全局变量
+     （测试里直接 eval 这两个函数时，裸 JUDGE 会 ReferenceError）。 */
+  const jd = (typeof window !== 'undefined' && window.JUDGE) || null;
+  if (jd && typeof jd.isThinking === 'function') return jd.isThinking(id);
+  return /thinking|reasoner|-r1$|hy\d.*-x$|hy4-preview/i.test(String(id || ''));
+}
+
+/* 这次让谁来整理印象。
+   顺序是「先不思考的 → 当前模型 → 思考型兜底」：印象是结构化小任务，
+   思考型在这种「输出很短、要求严格 JSON」的活上最容易空手而归。
+   最多试三个，不把老板的积分烧在一件事上。 */
+function vsModelOrder(cur) {
+  const all = (state.models || []).filter(m => m && m.id).map(m => String(m.id));
+  const order = [];
+  const push = id => { const s = String(id || ''); if (s && !order.includes(s)) order.push(s); };
+  const calm = all.filter(id => !vsIsThinking(id));
+  const hot = all.filter(vsIsThinking);
+  if (cur && !vsIsThinking(cur)) push(cur);
+  calm.forEach(push);
+  push(cur);
+  hot.forEach(push);
+  return order.slice(0, 3);
+}
+
 async function vsScan() {
   if (state.vsScanning) return;
   const said = vsGatherSaid();
@@ -2479,34 +2507,76 @@ async function vsScan() {
   let buf = '';
   let reasoning = '';
   let usage = null;
-  let lastPing = 0;
+  let fresh = [];
+  let last = null;
   try {
-    const payload = {
-      model,
-      messages: [{ role: 'system', content: VS_SCAN_SYS }, { role: 'user', content: usr }],
-      stream: true,
-      stream_options: { include_usage: true },
-      temperature: 0.4,
-      max_tokens: 2200
-    };
-    for await (const chunk of window.CLOUD.chatStream(payload)) {
-      const d = chunk && chunk.choices && chunk.choices[0] && chunk.choices[0].delta;
-      if (d && d.content) buf += d.content;
-      /* 推理模型会先吐一大段 reasoning，正文可能很晚才来；不接住会误判成「没吐正文」 */
-      if (d && d.reasoning_content) reasoning += d.reasoning_content;
-      if (chunk && chunk.usage) usage = chunk.usage;
-      const now = Date.now();
-      if (now - lastPing > 400) {
-        lastPing = now;
-        const n = (buf.match(/"text"/g) || []).length;
-        say(n ? `员工已经写下 ${n} 条，正在合并同义项…` : `员工正在翻你过去的 ${said.length} 句发言…`);
+    /* 一次只发一个模型的请求；空手而归时由外层换下一个。
+       抽出来是为了让「重试」变成循环而不是复制一段解析逻辑。 */
+    const once = async (model) => {
+      let b = '', r = '', fin = '', u = null, lastPing = 0;
+      const payload = {
+        model,
+        messages: [{ role: 'system', content: VS_SCAN_SYS }, { role: 'user', content: usr }],
+        stream: true,
+        stream_options: { include_usage: true },
+        temperature: 0.4,
+        /* 2200 是上一版的值，实测被思考吃光（正文 0 字、finish_reason=length）。
+           这类任务本身输出很短，预算给宽一点不浪费——思考型模型烧的是同一个额度。 */
+        max_tokens: 3000
+      };
+      for await (const chunk of window.CLOUD.chatStream(payload)) {
+        const ch = chunk && chunk.choices && chunk.choices[0];
+        const d = ch && ch.delta;
+        if (d && d.content) b += d.content;
+        /* 推理模型会先吐一大段 reasoning，正文可能很晚才来；不接住会误判成「没吐正文」 */
+        if (d && d.reasoning_content) r += d.reasoning_content;
+        if (ch && ch.finish_reason) fin = String(ch.finish_reason);
+        if (chunk && chunk.usage) u = chunk.usage;
+        const now = Date.now();
+        if (now - lastPing > 400) {
+          lastPing = now;
+          const n = (b.match(/"text"/g) || []).length;
+          say(n ? `员工已经写下 ${n} 条，正在合并同义项…` : `员工正在翻你过去的 ${said.length} 句发言…（${model}）`);
+        }
       }
+      return { buf: b, reasoning: r, finish: fin, usage: u, model };
+    };
+
+    /* 试的顺序：先不思考的，再当前模型，最后才是思考型。
+       思考型在这个任务上几乎必空手（把预算全花在推理上），
+       但也不是一律排除——列表里只有它时，给足预算仍有一半机会。 */
+    const order = vsModelOrder(model);
+    for (const m of order) {
+      say(`员工正在翻你过去的 ${said.length} 句发言…（${m}）`);
+      let r = null;
+      try {
+        r = await once(m);
+      } catch (e) {
+        /* 单个模型挂了（模型下线 / 通道 5xx）不该把整条路堵死：
+           记下来，换下一个。全挂了才由下面的失败分支统一说明。 */
+        last = { buf: '', reasoning: '', finish: 'error', model: m, error: String((e && e.message) || e) };
+        continue;
+      }
+      last = r;
+      buf = r.buf; reasoning = r.reasoning; usage = r.usage || usage;
+      fresh = vsParseImpressions(r.buf);
+      if (fresh.length) break;
+      /* 正文空、只有推理，或者回的不是 JSON：下一个模型再来一次 */
     }
 
-    const fresh = vsParseImpressions(buf);
     if (!fresh.length) {
-      const why = buf.trim() ? '模型回的不是清单格式' : (reasoning.trim() ? '模型只吐了推理没给正文' : '模型没回应');
-      toast(`这次没整理出印象：${why}。换一个模型再点一次试试`);
+      const why = !String(buf).trim()
+        ? (last && last.error
+          ? `通道报错（${String(last.error).slice(0, 60)}）`
+          : (String(reasoning).trim()
+            ? (last && last.finish === 'length'
+              ? '模型把额度全花在思考上，正文一个字没写'
+              : '模型只吐了推理没给正文')
+            : '模型没回应'))
+        : '模型回的不是清单格式';
+      const allThinking = order.length > 0 && order.every(m => vsIsThinking(m));
+      toast(`这次没整理出印象：${why}（试了 ${order.length} 个模型）。`
+        + (allThinking ? '你现在能用的都是思考型模型，换一个普通的再试。' : '再点一次，或者换一个模型试试。'));
       return;
     }
 
@@ -5642,7 +5712,12 @@ function renderTrace(noScroll) {
       <button onclick="grantAndRerun('${tr.blocked.category}')">开启并重跑</button></div>`;
   }
   if (tr.error) {
-    html += `<div class="alert err"><div class="grow">${esc(tr.error)}</div></div>`;
+    /* 额度用尽不是「出错」，是一个能当场解掉的状态：旁边直接给门，
+       别让人对着一句「用完了」自己去找设置里哪个数字才是它。 */
+    const quotaBlocked = /账号额度用完了|token 额度用完了/.test(String(tr.error));
+    html += `<div class="alert err"><div class="grow">${esc(tr.error)}</div>`
+      + (quotaBlocked ? '<button class="btn tiny" data-quota-fix="1" type="button">去调额度</button>' : '')
+      + '</div>';
   }
   /* 这一轮的执行过程：默认收成一行，点开才摊细节 */
   const shown = tr.nodes.filter(n => !HIDE_STEPS.has(n.name));
@@ -6246,45 +6321,201 @@ function slimText(s, head, tail) {
   if (t.length <= head + tail + 60) return t;
   return `${t.slice(0, head)}\n…[中间省略 ${t.length - head - tail} 字：全文在工作区文件里，要读就 read_file]…\n${tail ? t.slice(-tail) : ''}`;
 }
-function slimMessages(list, level) {
+
+/* ── 什么会被网关当成「攻击载荷」──
+ * 线上实测（2026-11-06，第四次栽在同一处）：
+ *   任务在写一个 HTML 原型，第二轮起 /api/run 就 403，回的是一张
+ *   api.waf.qq.com 的反馈页（页面里那句 function submitWafFeedback 被当成我们的
+ *   错误信息弹了出来）。**那次请求体并不大**——v0.8.5 只按 420KB 瘦身，
+ *   几十 KB 的 index.html 根本没碰到阈值。
+ *   所以判定不能只看体积：只要正文里出现整段源码（<script>、function(...)、
+ *   import ...），WAF 的「Web 攻击」规则就会命中。凡是把代码原样放进 JSON 的
+ *   做法，在这个网关后面都是必挂的，跟任务本身有没有问题无关。
+ *
+ * 由此定下的规矩：**代码不进请求体**。文件在工作区，模型要看就 read_file。
+ * 这条比「超过多少 KB 才砍」硬，因为它不是性能取舍，是通不通的问题。 */
+const CODE_HINT = /<script|<html|<!doctype|<\?php|<style|onclick\s*=|onerror\s*=|document\.|window\.|function\s*[A-Za-z_$]*\s*\(|=>\s*\{|\bconsole\.|^\s*(def|class|import|from|package)\s/m;
+
+function looksCode(s) {
+  const t = String(s == null ? '' : s);
+  return t.length > 40 && CODE_HINT.test(t);
+}
+
+/* 把一段「夹着代码的话」里的代码剥掉，留下人话。
+   很多消息不是纯代码，而是「这是你要的原型：<整篇 html>」「我改了这三处：```js …```」。
+   整条丢掉太可惜（那是上下文），原样留着又过不了网关——所以剥掉代码块，
+   人话留着，代码指回文件。 */
+function stripCodeBlocks(s) {
+  let t = String(s == null ? '' : s);
+  t = t.replace(/<script[\s\S]*?<\/script>/gi, '\n（脚本已省略：在文件里，要看就 read_file）\n')
+    .replace(/<style[\s\S]*?<\/style>/gi, '\n（样式已省略）\n')
+    .replace(/```[\s\S]*?```/g, '\n（代码块已省略：在文件里，要看就 read_file）\n');
+  return t;
+}
+
+/* 一条文本怎么洗：先剥代码块，剥完还带源码特征就整条换成指针。 */
+function scrubText(s, near, keep) {
+  const t = String(s == null ? '' : s);
+  const cleaned = stripCodeBlocks(t);
+  if (looksCode(cleaned)) {
+    return `（这条消息里有整段代码/网页源码，${t.length} 字，已省略：文件在工作区，需要就 read_file）`;
+  }
+  /* keep = 最后一条（老板刚说的这句）：除了剥掉的代码，别的都留着 */
+  if (keep) return cleaned.length > 4000 ? slimText(cleaned, 4000, 0) : cleaned;
+  if (cleaned !== t || cleaned.length > 900) return slimText(cleaned, near ? 600 : 300, 0);
+  return cleaned;
+}
+/* 存档用：不截短（步骤详情还有用），只把代码剥掉/换指针。
+   和请求体的要求一样——代码不进 JSON，否则云库那条链路也会 403，
+   表现就是「完整轨迹没同步上」。 */
+function scrubKeep(s) {
+  const t = String(s == null ? '' : s);
+  const c = stripCodeBlocks(t);
+  if (looksCode(c)) return `（这段里有 ${t.length} 字源码，已省略：文件在工作区，要读就 read_file）`;
+  return c;
+}
+
+function scrubArgs(args) {
+  if (!args || typeof args !== 'object') return args;
+  const out = {};
+  for (const [k, v] of Object.entries(args)) {
+    if (typeof v === 'string') {
+      out[k] = looksCode(v) ? `（${v.length} 字源码已省略：在文件里）` : v;
+    } else if (v && typeof v === 'object') {
+      const s = JSON.stringify(v);
+      out[k] = looksCode(s) ? '（源码已省略）' : v;
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+/* 轨迹落库前洗一遍：args 里可能是整篇文件，output 里可能是读回来的正文 */
+function scrubSteps(list) {
+  return (Array.isArray(list) ? list : []).map(s => {
+    if (!s || typeof s !== 'object') return s;
+    const o = { ...s };
+    if (typeof o.output === 'string' && o.output) o.output = scrubKeep(o.output);
+    if (typeof o.text === 'string' && o.text) o.text = scrubKeep(o.text);
+    if (o.args && typeof o.args === 'object') o.args = scrubArgs(o.args);
+    return o;
+  });
+}
+
+/* 把一条条 messages 洗成「能被网关放行」的样子。
+   比起 v0.8.5 那版只摘图，这里多了三件事，每一件都对应一次真实 403：
+     ① tool 输出（读文件读回来的正文）→ 换成一句指针；
+     ② 工具调用参数（写文件时的整篇内容）→ 换成占位；
+     ③ 文本里出现源码特征 → 剥掉代码块，剥不干净就整条换指针，不管总长度有没有到阈值。 */
+function scrubForWire(list) {
   const arr = Array.isArray(list) ? list : [];
-  /* level = -1 是「只摘图」档：图片 base64 一定要摘（体积），但一个字都不许砍——
-     砍正文是有损的，只在请求体真的过大时才做。 */
-  const onlyImg = level === -1;
-  const head = level >= 2 ? 160 : 700;
-  const tail = level >= 2 ? 0 : 220;
-  const keepTail = level >= 2 ? 2 : 3;
   const n = arr.length;
   return arr.map((m, i) => {
     if (!m || typeof m !== 'object') return m;
+    /* 系统提示是我们自己写的规矩，几千字，不会带源码 */
+    if (m.role === 'system') return m;
+    const out = { ...m };
+    const last = i === n - 1;
+    const near = i >= n - 2;
+
+    /* 工具读回来的正文：这是最大的一坨，也是 WAF 最爱看的那一坨 */
+    if (out.role === 'tool') {
+      const t = String(out.content == null ? '' : out.content);
+      if (t.length > 400 || looksCode(t)) {
+        out.content = `（这条工具输出 ${t.length} 字已省略：内容在工作区文件里，需要就 read_file / view_image 自己读）`;
+      }
+      return out;
+    }
+
+    if (Array.isArray(out.tool_calls)) {
+      out.tool_calls = out.tool_calls.map(tc => {
+        const a = tc && tc.function && tc.function.arguments;
+        if (typeof a !== 'string') return tc;
+        if (a.length <= 240 && !looksCode(a)) return tc;
+        return { ...tc, function: { ...tc.function, arguments: '{"note":"参数已省略（文件内容在工作区，需要就 read_file）"}' } };
+      });
+    }
+
+    if (typeof out.content === 'string') {
+      out.content = scrubText(out.content, near, last);
+    } else if (Array.isArray(out.content)) {
+      out.content = out.content.map(c => {
+        if (!c || typeof c !== 'object') return c;
+        if (c.type === 'text') {
+          const t = String(c.text == null ? '' : c.text);
+          const clean = scrubText(t, near, last);
+          return clean === t ? c : { ...c, text: clean };
+        }
+        if (c.type === 'image_url') return { type: 'text', text: '（这里原本附了一张图，已从上下文摘掉；路径见上文，要看就调 view_image）' };
+        return c;
+      });
+    }
+    return out;
+  });
+}
+
+const msgsKB = list => Math.round(JSON.stringify(Array.isArray(list) ? list : []).length / 1024);
+
+/* 洗完还是太大，就从最老的开始丢——但**成对丢**：
+   丢了一条带 tool_calls 的 assistant 却留着它的 tool 回复，模型通道会直接 400。
+   最后两条永远留着（那是这一轮真正要干的事）。 */
+function fitMessages(list, budgetKB) {
+  let arr = Array.isArray(list) ? list : [];
+  let guard = 0;
+  while (msgsKB(arr) > budgetKB && arr.length > 3 && guard++ < 400) {
+    const i = arr.findIndex((m, k) => k > 0 && m && m.role !== 'system');
+    if (i < 0) break;
+    let drop = 1;
+    if (arr[i].role === 'assistant' && Array.isArray(arr[i].tool_calls)) {
+      while (arr[i + drop] && arr[i + drop].role === 'tool') drop++;
+    }
+    arr = arr.slice(0, i).concat(arr.slice(i + drop));
+  }
+  return arr;
+}
+
+/* 一次请求的上下文预算。不是「省 token」，是「过网关」：
+   洗完之后正常在 10–30KB，超过 120KB 说明还有东西没被识别成代码。 */
+const WIRE_BUDGET_KB = 120;
+
+function slimMessages(list, level) {
+  const arr = Array.isArray(list) ? list : [];
+  /* level = -1 是「每次都做」的那一档：摘图 + 抹代码，不按体积判断。
+     砍正文是有损的，但代码那部分**本来就该由 read_file 提供**，不算丢信息。 */
+  const onlyImg = level === -1;
+  /* 不管哪一档，先洗一遍：代码和图片 base64 都不进请求体，
+     这条没有「小就放行」的例外。 */
+  const base = scrubForWire(arr);
+  if (onlyImg) return fitMessages(base, WIRE_BUDGET_KB);
+  const head = level >= 2 ? 160 : 700;
+  const tail = level >= 2 ? 0 : 220;
+  const keepTail = level >= 2 ? 2 : 3;
+  const n = base.length;
+  const out2 = base.map((m, i) => {
+    if (!m || typeof m !== 'object') return m;
     /* 系统提示是「怎么干活」的规矩，砍了等于换个人 */
     if (m.role === 'system') return m;
+    /* 工具输出已经在 scrubForWire 里换成指针了，别再截一次 */
+    if (m.role === 'tool') return m;
     const near = i >= n - keepTail;
     const out = { ...m };
     if (typeof out.content === 'string') {
       /* 最后几条可能是老板刚说的这句指令，本来就短，原样留着 */
-      if (!onlyImg) out.content = (near && out.content.length < 6000) ? out.content : slimText(out.content, head, tail);
+      out.content = (near && out.content.length < 6000) ? out.content : slimText(out.content, head, tail);
     } else if (Array.isArray(out.content)) {
       out.content = out.content.map(c => {
         if (!c || typeof c !== 'object') return c;
-        if (c.type === 'text') return onlyImg ? c : { ...c, text: slimText(c.text, head, tail) };
+        if (c.type === 'text') return { ...c, text: slimText(c.text, head, tail) };
         /* 多模态 part 里的 base64：一张图几百 KB，历史里留几张就能把请求体顶过网关上限。
            图还在工作区，路径写在正文里，模型要看自己调 view_image。 */
         if (c.type === 'image_url') return { type: 'text', text: '（这里原本附了一张图，已从上下文摘掉；路径见上文，要看就调 view_image）' };
         return c;
       });
     }
-    /* 写文件的工具调用：整份文件内容就在 arguments 里。已经执行完了，
-       历史里再留全文只是给网关递刀。 */
-    if (!onlyImg && Array.isArray(out.tool_calls)) {
-      out.tool_calls = out.tool_calls.map(tc => {
-        const a = tc && tc.function && tc.function.arguments;
-        if (typeof a !== 'string' || a.length <= 1000) return tc;
-        return { ...tc, function: { ...tc.function, arguments: '{"note":"文件全文已省略；内容已在工作区，需要就 read_file"}' } };
-      });
-    }
     return out;
   });
+  return fitMessages(out2, level >= 2 ? 40 : WIRE_BUDGET_KB);
 }
 /* 图片是 dataURL，一张顶几百 KB 文字。**无条件**摘掉 base64，只留路径：
    体积问题不是「大了才处理」，而是「一有图就超标」——一次发三张截图，
@@ -6415,8 +6646,11 @@ async function agentRun(job) {
        只剩一句「HTTP 403」的话，谁都分不清是自己拒的还是网关拒的。 */
     const peek = !j && raw
       ? String(raw).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140) : '';
+    /* 把「这次请求有多大」一并说出来：没有这个数，403 只能靠猜，
+       上一版就因为看不到体积，把「几十 KB 的源码触发规则」误判成「体积超标」，
+       于是修了一个不存在的阈值。 */
     throw new Error((j && j.error)
-      || `服务端拒绝了这次执行（HTTP ${r.status}）${peek ? '：' + peek : ''}`);
+      || `服务端拒绝了这次执行（HTTP ${r.status}，请求体 ${payloadKB(body)}KB）${peek ? '：' + peek : ''}`);
   }
   SRV.on = true;
   SRV.runId = String(job.task.id || '');
@@ -6849,9 +7083,14 @@ async function persistTask(task) {
     : (task.verify ? { checked: false, pass: true, missing: [], detail: [], verify: task.verify } : null);
   const full = {
     status: task.status,
-    result: task.result || '',
-    steps: buildSteps(task),
-    messages: task.messages || null,
+    result: scrubKeep(task.result || ''),
+    /* 轨迹也要洗：args 里是整篇文件、output 里是读回来的正文，
+       原样提交到云库同样会被 WAF 拦，表现是「完整轨迹没同步上」。 */
+    steps: scrubSteps(buildSteps(task)),
+    /* 存档也走同一道洗：这条曾经把整份 index.html 原样塞进云库，
+       云库那条链路的网关同样会 403（表现是「轨迹没同步上」）。
+       对话本身在 steps / userMsgs 里，messages 只是给下一轮接话用的。 */
+    messages: task.messages ? slimMessages(task.messages, -1) : null,
     userMsgs: task.userMsgs || null,
     tokens: task.tokens || { in: 0, out: 0 },
     ms: task.ms || 0,
@@ -7645,6 +7884,92 @@ function normLimits(raw) {
     projTokens: int(r.projTokens, 600000, 20000, 200000000)
   };
 }
+/* ── 账号额度：读 / 存 ──
+ *
+ * 这一块以前根本不存在。界面上唯一叫「额度」的输入框是「单任务 token 上限」，
+ * 而真正拦人的是账号日额度——两个数、两套闸，只有前一个有地方改。结果就是
+ * 「我改了额度，它说额度用完了」：改的那个数对拦人的那个数一点影响都没有。
+ *
+ * 现在把账号额度摆到设置里，并且**改完立刻生效**（服务端每次判断都读最新值），
+ * 不用等重启、不用等第二天零点。
+ */
+const QUOTA_NF = n => Number(n || 0).toLocaleString('zh-CN');
+/* 上次读到的服务端上限。用来判断「打开设置→改了数→按了保存」时
+   到底要不要发一次保存请求——不能靠输入框有值就发，那会把所有老数值重写一遍。 */
+const quotaLoaded = { day: 0, month: 0 };
+
+function quotaMsg(text, bad) {
+  const el = $('#quotaMsg');
+  if (!el) return;
+  el.textContent = text || '';
+  el.classList.toggle('bad', !!bad);
+}
+
+async function refreshQuotaBox() {
+  const day = $('#quotaDay');
+  const mon = $('#quotaMonth');
+  const note = $('#quotaNote');
+  if (!day || !mon || !note) return;
+  note.classList.remove('warn');
+  if (state.guest) {
+    note.textContent = '游客态不记账；登录后这里会显示这个账号的真实用量。';
+    return;
+  }
+  try {
+    const r = await fetch(window.withSC('/api/quota'), { headers: { Accept: 'application/json' } });
+    const j = await r.json();
+    if (!j || !j.ok) throw new Error((j && j.error) || `HTTP ${r.status}`);
+    const lim = j.limits || {};
+    const d = (j.tokens && j.tokens.day) || {};
+    const m = (j.tokens && j.tokens.month) || {};
+    if (lim.tokenDaily) day.value = lim.tokenDaily;
+    if (lim.tokenMonthly) mon.value = lim.tokenMonthly;
+    quotaLoaded.day = Number(lim.tokenDaily) || 0;
+    quotaLoaded.month = Number(lim.tokenMonthly) || 0;
+    const when = d.resetAt
+      ? new Date(d.resetAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric' })
+      : '明天';
+    note.textContent = `今天已用 ${QUOTA_NF(d.used)} / ${QUOTA_NF(d.limit)} token（${when} 零点重置）`
+      + ` · 本月 ${QUOTA_NF(m.used)} / ${QUOTA_NF(m.limit)}`;
+    /* 单任务上限高过日额度 = 注定跑到一半被账号额度打断。
+       这种数字组合不报错，但一定会在中途停，提前说出来比事后解释便宜。 */
+    const cap = Number(state.settings && state.settings.maxTokens) || 0;
+    if (cap && d.limit && cap > d.limit) {
+      note.textContent += `。注意：单任务上限 ${QUOTA_NF(cap)} 比日额度还高，长任务会被这里的额度先拦住`;
+      note.classList.add('warn');
+    }
+  } catch (e) {
+    note.textContent = '读不到额度：' + String((e && e.message) || e).slice(0, 120);
+  }
+}
+
+async function saveQuotaBox() {
+  const day = Math.round(Number($('#quotaDay').value));
+  const mon = Math.round(Number($('#quotaMonth').value));
+  if (!(day > 0) || !(mon > 0)) { quotaMsg('两个数都要大于 0', true); return; }
+  if (mon < day) { quotaMsg('月度上限不能比每天上限还小', true); return; }
+  const btn = $('#quotaSave');
+  if (btn) btn.disabled = true;
+  quotaMsg('保存中…');
+  try {
+    const r = await fetch(window.withSC('/api/quota/limits'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tokenDaily: day, tokenMonthly: mon })
+    });
+    const j = await r.json().catch(() => null);
+    if (!r.ok || !j || !j.ok) throw new Error((j && j.error) || `HTTP ${r.status}`);
+    quotaMsg('已保存，立刻生效');
+    await refreshQuotaBox();
+    toast('额度已保存并生效');
+  } catch (e) {
+    quotaMsg('没存上：' + String((e && e.message) || e).slice(0, 140), true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+if ($('#quotaSave')) $('#quotaSave').onclick = saveQuotaBox;
+
 function openSettings() {
   const opts = state.models.length
     ? state.models.map(m => `<option value="${esc(m.id)}" ${m.id === state.settings.model ? 'selected' : ''}>${esc(m.name || m.id)}${m.supportsToolCall === false ? '（无工具调用）' : ''}</option>`).join('')
@@ -7663,6 +7988,9 @@ function openSettings() {
   renderCronList();
   updateModelNote();
   refreshOutDirRow();
+  /* 打开就拉一次真实用量：这块数字必须当场是准的，
+     不能是「上次打开时」的缓存——老板就是冲着它来的。 */
+  refreshQuotaBox();
   const cb = $('#cloudBackup');
   if (cb) cb.checked = cloudBackupOn();
   $('#setModal').hidden = false;
@@ -7782,6 +8110,14 @@ $('#setSave').onclick = async () => {
   renderModelPill();
   $('#setModal').hidden = true;
   await persistSettings(patch);
+  /* 额度那一块存在服务端的额度表里，和上面这些偏好不是一处。
+     只用「保存」不给额度也算保存，是「我改了它没生效」的另一个版本——
+     这里一并提交，别再让人猜哪个按钮管哪个数。 */
+  const qd = Math.round(Number($('#quotaDay') ? $('#quotaDay').value : 0));
+  const qm = Math.round(Number($('#quotaMonth') ? $('#quotaMonth').value : 0));
+  if (quotaLoaded.day && qd > 0 && qm > 0 && (qd !== quotaLoaded.day || qm !== quotaLoaded.month)) {
+    await saveQuotaBox();
+  }
   /* 项目页顶上那句「这个项目的 token 上限 X」用的是这组数，改完就地重画 */
   if (state.view === 'meeting' && window.MEET && window.MEET.render) {
     try { window.MEET.render(); } catch (e) { /* 重画失败不影响设置已存 */ }
@@ -8832,6 +9168,22 @@ function initSplitters() {
     });
   });
 }
+
+/* 额度被拦之后的那颗「去调额度」：直接把设置打开、滚到那一块、聚焦输入框。
+   三步操作一次点完——中间少一步，人多半就去干别的了。 */
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-quota-fix]');
+  if (!b) return;
+  e.preventDefault();
+  e.stopPropagation();
+  openSettings();
+  const box = $('#quotaDay');
+  if (box) {
+    try { box.scrollIntoView({ block: 'center' }); } catch { /* 老浏览器没有也行 */ }
+    box.focus();
+    try { box.select(); } catch { /* 忽略 */ }
+  }
+});
 
 /* 对话里文件卡上的「预览」：一律走产出预览弹窗，省得再去文件管理器翻 */
 document.addEventListener('click', e => {
