@@ -200,6 +200,15 @@ if (JSON_OUT) {
    而人（和模型）真正需要的是「现在这一步成了没有、下一步是什么」。 */
 const say = (s = '') => console.log(s);
 
+/* 决策里存的是 UTC（ISO）。直接截字符串会显示成「昨天」——
+   而这里问的恰好是「刚才那轮怎么了」，差 8 小时就答错了。 */
+const local = (iso) => {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso || '').slice(5, 16).replace('T', ' ');
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+
 if (!data.ok) {
   say('');
   say('  ✗ ' + (data.error || '失败'));
@@ -274,7 +283,7 @@ if (cmd === 'next' || cmd === 'triage') {
     say('  最近几轮：');
     for (const r of rows) {
       const what = r.picked ? `开了 ${r.picked}` : (r.resume ? `在修 ${r.resume}` : '没开');
-      say(`    ${(r.at || '').slice(5, 16).replace('T', ' ')}  ${what}${r.dryRun ? '（只看）' : ''}${r.beganWhy ? `　✗ ${r.beganWhy}` : ''}`);
+      say(`    ${local(r.at)}  ${what}${r.dryRun ? '（只看）' : ''}${r.beganWhy ? `　✗ ${r.beganWhy}` : ''}`);
     }
   }
   say('');

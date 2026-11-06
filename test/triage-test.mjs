@@ -236,6 +236,15 @@ console.log('\n[11] 决策留痕：能回答「为什么这周一张都没修」
   ok('统计里能数出轮次', s.rounds === rows.length, { rounds: s.rounds, rows: rows.length });
   ok('统计里能数出开成几张', s.began >= 1, s.began);
   ok('统计给出挡掉最多的原因', Array.isArray(s.top), s.top);
+
+  /* 文件名必须是**本地**日期。取「本地零点再 toISOString」会退一天，
+     于是今天的决策写进昨天那个文件——人来翻的时候第一句就是「怎么不在这儿」。 */
+  const d = new Date();
+  const p2 = (n) => String(n).padStart(2, '0');
+  const localDay = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+  ok('决策文件按本地日期命名（不退一天）',
+    fs.existsSync(path.join(REPAIR_DIR, 'decisions', localDay + '.jsonl')),
+    fs.readdirSync(path.join(REPAIR_DIR, 'decisions')));
 }
 
 /* 收尾：把 worktree 摘掉，别给下一次跑留垃圾 */
