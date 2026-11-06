@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node server.js",
     "start:cloud": "PORT=8080 node server.js",
+    "dev": "node scripts/dev.mjs",
     "release": "node scripts/release.mjs",
     "test": "for f in test/*.mjs; do node \"$f\" || exit 1; done"
   }

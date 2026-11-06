@@ -35,6 +35,7 @@ import {
 import { toolAudit, writeAudit, readAudit, auditStats, sweepAudit } from './lib/audit.js';
 import * as METRICS from './lib/metrics.js';
 import * as INCIDENT from './lib/incident.js';
+import * as DEVINFO from './lib/devinfo.js';
 import { addAlert, listAlerts, ackAlerts, ADMIN_EMAIL, ALERTS_KEY } from './lib/alerts.js';
 import { probeRuntime, runtimeWord, hardenAll, uidForScope, runIsolated } from './lib/sandbox.js';
 import { secretStatus, secretDirInfo, secretDir } from './lib/config.js';
@@ -263,6 +264,16 @@ async function streamRun(req, res, run, from) {
 /* ── 安全闸 ── */
 const BIND = process.env.HOST || (process.env.PORT ? '0.0.0.0' : '127.0.0.1');
 const LOCAL_ONLY = /^(127\.0\.0\.1|localhost|::1)$/.test(BIND);
+
+/* dev 实例的隔离闸门。
+   放在这里（而不是 listen 之前）是为了尽量早：BIND 刚算出来，还没建任何
+   路由、还没读任何数据。拒绝时退出码用 2 而不是 1，和「代码炸了」区分开——
+   运维脚本里这两种要分开处理，一个是「配置错了」，一个是「程序坏了」。 */
+const DEV = DEVINFO.assertSafe();
+if (!DEV.ok) {
+  console.error(DEV.message);
+  process.exit(2);
+}
 const LOOPBACK = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/;
 /* 额外放行的来源域名（host[:port] 形式，逗号分隔）。放在反代后面时通常用不到，
    因为公开域名会经 Host / X-Forwarded-Host 传进来；换域名又不想改代码时用它。 */
@@ -727,6 +738,10 @@ async function route(req, res) {
       return send(res, 200, {
         ok: true, v: BUILD.version || '0.4.0',
         mode: LOCAL_ONLY ? 'local' : 'cloud',
+        /* 这个实例是不是 dev。
+           必须显式暴露：dev 和生产长着一模一样的界面，唯一能区分它们的就是
+           这一行。少了它，在 dev 上点了一圈、以为处理了真实数据，是很容易发生的事。 */
+        dev: DEV.dev,
         auth: AUTH_MODE,
         /* 线上跑的是哪个版本：发布脚本写的 build.json。没有就是「本地直接起的」，
            这种状态能跑但不该出现在线上——出问题时无法回答「线上是什么版本」。 */
@@ -2390,6 +2405,11 @@ server.listen(PORT, BIND, () => {
   console.log('  Ren Agent · 工具执行器 + 执行循环 v0.4 已启动');
   console.log('  ────────────────────────────────────────────');
   console.log('  监听：  ' + BIND + ':' + PORT);
+  /* dev 实例在终端里也要有一眼能看到的标记。它和生产的启动日志除此之外
+     完全一样，而人看日志时只看前几行。 */
+  if (DEV.dev) {
+    console.log('  ⚠ dev 实例：只绑回环、数据在 ' + (process.env.REN_DEV_ROOT || '(未设)'));
+  }
   console.log('  工作区：' + WORKSPACE_BASE);
   /* 审计清扫：只写不删的话，data/ 会一路涨到把磁盘写满，备份也跟着变肥。
      启动先扫一次（重启大多因为发布，等于每次发布顺带体检），之后每 6 小时一次。
