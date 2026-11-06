@@ -38,6 +38,7 @@ import * as INCIDENT from './lib/incident.js';
 import * as TICKET from './lib/ticket.js';
 import { runProof, saveProof, proofStats } from './lib/proof.js';
 import * as REPAIR from './lib/repair.js';
+import * as TRIAGE from './lib/triage.js';
 import * as DEVINFO from './lib/devinfo.js';
 import { addAlert, listAlerts, ackAlerts, ADMIN_EMAIL, ALERTS_KEY } from './lib/alerts.js';
 import { probeRuntime, runtimeWord, hardenAll, uidForScope, runIsolated } from './lib/sandbox.js';
@@ -840,6 +841,10 @@ async function route(req, res) {
            fixed 这个数就是整条链路的瓶颈——它积起来，说明修的速度超过复核的速度，
            那时候该加的是复核，不是让它多修。 */
         tickets: withKey ? { ...TICKET.ticketStats(), proof: proofStats(), proving: PROOF_BUSY.on } : undefined,
+        /* 分诊：本周起了几轮、开成几张、被什么挡掉最多。
+           没有这一条，「这周一张都没修」只能靠翻日志——
+           而「真没有错」和「全被规则挡掉」在界面上长得一模一样。 */
+        triage: withKey ? TRIAGE.triageStats({ days: 7 }) : undefined,
         /* 状态层：mode 是 memory 就说明这次降级了——磁盘上什么都没存。
            reaped 是本次启动收掉的中断任务数，非 0 意味着上次是非正常退出。 */
         state: withKey ? state.stats() : { mode: state.modeOf() },
@@ -1096,7 +1101,16 @@ async function route(req, res) {
       const t0 = Date.now();
       let out;
       if (action === 'list') out = { ok: true, repairs: REPAIR.list() };
-      else if (action === 'begin') {
+      else if (action === 'next') {
+        /* 分诊 + 开修。这一条是「谁起这一轮」的答案：
+           选哪张、为什么跳过其余、开没开成，一次回执全给。 */
+        out = await TRIAGE.next({ dryRun: !!b.dryRun, by: String(b.by || 'ren') });
+      } else if (action === 'triage') {
+        out = TRIAGE.pick({ dryRun: true });
+      } else if (action === 'decisions') {
+        const days = Math.max(1, Math.min(Number(b.days) || 7, 30));
+        out = { ok: true, days, stats: TRIAGE.triageStats({ days }), decisions: TRIAGE.decisions({ days, limit: 200 }) };
+      } else if (action === 'begin') {
         out = await REPAIR.begin({ sig: String(b.sig || b.id || ''), by: String(b.by || 'ren') });
       } else if (action === 'tree') out = REPAIR.tree({ key, dir: b.dir });
       else if (action === 'read') out = REPAIR.read({ key, path: b.path, from: b.from, lines: b.lines });
