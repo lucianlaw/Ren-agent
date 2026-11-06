@@ -34,6 +34,7 @@ import {
 } from './lib/memory.js';
 import { toolAudit, writeAudit, readAudit, auditStats, sweepAudit } from './lib/audit.js';
 import * as METRICS from './lib/metrics.js';
+import * as INCIDENT from './lib/incident.js';
 import { addAlert, listAlerts, ackAlerts, ADMIN_EMAIL, ALERTS_KEY } from './lib/alerts.js';
 import { probeRuntime, runtimeWord, hardenAll, uidForScope, runIsolated } from './lib/sandbox.js';
 import { secretStatus, secretDirInfo, secretDir } from './lib/config.js';
@@ -322,6 +323,30 @@ const AUTH_STATS = { verified: 0, fk: 0, rejected: 0, lastCode: '' };
 /* 审计清扫的最近一次结果 + 定时器句柄：health 里要能看到「上一次到底删了几个」，
    否则「有保留期」和「没保留期」在页面上看不出区别。 */
 const AUDIT_SWEEP = { last: null, timer: null };
+
+/* ── 未捕获异常的兜底 ──
+   这里有个取舍必须写出来：Node 默认让未捕获异常杀掉进程。我们不杀，只记录。
+   因为这台机器上没有替它重启的看守，进程死了就等于服务死了，连日志都读不到——
+   而「自举链路的第一环是看见故障」，进程级崩溃恰恰是最看不见的那种。
+   代价是「活着但状态可疑」，所以把次数暴露到 health 的 crashes 里，
+   让它显式存在，而不是悄悄发生。 */
+const UNCAUGHT = { n: 0, last: null };
+function onCrash(kind, e) {
+  try {
+    UNCAUGHT.n += 1;
+    const err = e instanceof Error ? e : new Error(String(e));
+    UNCAUGHT.last = { kind, at: new Date().toISOString(), msg: String(err.message || '').slice(0, 300) };
+    INCIDENT.report({
+      code: 'E_PROCESS', layer: 'server', route: kind, where: 'process',
+      msg: `${kind}: ${err.message}`,
+      stack: String(err.stack || '').split('\n').filter(Boolean).slice(0, 8),
+      v: BUILD.version, commit: BUILD.commit
+    });
+    console.error(`[${kind}]`, err && err.stack ? err.stack : err);
+  } catch { /* 兜底的兜底也不能抛 */ }
+}
+process.on('uncaughtException', (e) => onCrash('uncaughtException', e));
+process.on('unhandledRejection', (e) => onCrash('unhandledRejection', e));
 function bumpAuth(k, code) {
   AUTH_STATS[k] = (AUTH_STATS[k] || 0) + 1;
   if (code) AUTH_STATS.lastCode = String(code);
@@ -446,7 +471,11 @@ const OPTIONAL_AUTH = new Set(['/api/alerts', '/api/alerts/ack', '/api/sandbox-c
   /* 诊断出口：从 PUBLIC_API 挪到这里（不再免身份），handler 里只认运维 key。
      放 OPTIONAL_AUTH 而不是删掉：闸门先验一遍、验不过也交下去，
      这样拿着 key 的 cron 能直接 curl，而不必先有一个浏览器登录态。 */
-  '/api/auth-diag', '/api/admin/audit-sweep', '/api/metrics']);
+  '/api/auth-diag', '/api/admin/audit-sweep', '/api/metrics',
+  /* 报错上报：必须是「可选身份」而不是「必须登录」。
+     登录页自己崩掉的时候，用户手上根本没有凭证——要求先登录再报错，
+     等于最该被记录的那类故障永远记不到。 */
+  '/api/incident', '/api/incidents', '/api/admin/incident-sweep']);
 
 
 /* ── 内部调用凭证 ──
@@ -610,6 +639,19 @@ const server = http.createServer((req, res) => {
       const ms = Number(process.hrtime.bigint() - t0) / 1e6;
       const len = Number(res.getHeader('content-length') || 0);
       METRICS.record(path0, ms, res.statusCode, len);
+      /* 5xx 自动进问题单：这是唯一能覆盖「所有端点」的挂钩点。
+         漏了它的话，恰好是出问题的那些端点不会有记录——而它们往往
+         就是没写 try/catch 的那几个。 */
+      if (res.statusCode >= 500) {
+        const au = (() => { try { return currentAuth(); } catch { return null; } })();
+        INCIDENT.report({
+          code: 'E_HTTP_5XX', layer: 'server', route: path0, where: 'http',
+          msg: `${req.method} ${path0} → ${res.statusCode}${ms > 3000 ? `（${Math.round(ms)}ms）` : ''}`,
+          scope: (au && au.scope) || '',
+          v: BUILD.version, commit: BUILD.commit,
+          ua: String(req.headers['user-agent'] || '')
+        });
+      }
     } catch { /* 记指标不能影响响应 */ }
   });
   /* 每个请求一份身份上下文。用 ALS 而不是模块级变量：请求之间是交错执行的，
@@ -729,6 +771,14 @@ async function route(req, res) {
         /* 请求级指标：在它之前，线上出问题的唯一证据是用户截图。
            公开页不给（会暴露路由结构），带 key 的给一张摘要。 */
         metrics: withKey ? { line: METRICS.line(), ...METRICS.summary({ limit: 8 }) } : undefined,
+        /* 问题单现状：白天有没有在报错，这一条就能回答。
+           crashes 是本次启动以来「未捕获异常」的次数——非 0 说明进程虽然活着，
+           但曾经走到过一个没人接的异常里，状态不能全信。 */
+        incident: {
+          last24h: INCIDENT.incidentStats().last24h,
+          suppressed: INCIDENT.suppressed(),
+          crashes: UNCAUGHT.n
+        },
         /* 状态层：mode 是 memory 就说明这次降级了——磁盘上什么都没存。
            reaped 是本次启动收掉的中断任务数，非 0 意味着上次是非正常退出。 */
         state: withKey ? state.stats() : { mode: state.modeOf() },
@@ -1625,6 +1675,57 @@ async function route(req, res) {
       if (u.searchParams.get('reset') === '1') METRICS.reset();
       const limit = Math.max(1, Math.min(Number(u.searchParams.get('limit')) || 12, 60));
       return send(res, 200, { ok: true, line: METRICS.line(), ...METRICS.summary({ limit }) });
+    }
+
+    /* ── 报错上报：标准错误记录 ──
+       客户端把「又报错了」变成一条结构化记录，服务端自己也往这里写。
+       这个接口的铁律是「绝不让调用方更糟」：收不下就 204 走人，
+       不在错误路径上再抛一次——那会把一次故障变成两次。 */
+    if (u.pathname === '/api/incident' && req.method === 'POST') {
+      let b = null;
+      try { b = await readBody(req, 16 * 1024); } catch { b = null; }
+      if (!b || typeof b !== 'object') { res.writeHead(204); return res.end(); }
+      const au = currentAuth();
+      INCIDENT.report({
+        code: b.code, route: b.route, where: b.where, msg: b.msg, stack: b.stack,
+        layer: 'client', extra: b.extra,
+        /* 身份以闸门验出来的为准，不采信 body 里自称的 scope：
+           否则谁都能往别人的工单里塞样本。 */
+        scope: (au && au.scope) || '',
+        v: b.v || BUILD.version, commit: b.commit || BUILD.commit,
+        ua: b.ua || String(req.headers['user-agent'] || '')
+      });
+      res.writeHead(204); return res.end();
+    }
+
+    /* ── 运维：问题单列表（按签名归组）──
+       这张表就是「工单」：同一个签名犯了几次、跨几个账号、第一次和最后一次。
+       排序按次数不按时间——「稳定的老毛病」比「刚抖了一下」更该先修。 */
+    if (u.pathname === '/api/incidents' && req.method === 'GET') {
+      if (!adminOK(req, u)) return send(res, 403, { ok: false, error: 'key 不对或不是管理员' });
+      const to = u.searchParams.get('to') || new Date().toISOString();
+      const from = u.searchParams.get('from')
+        || new Date(Date.now() - 7 * 86400e3).toISOString();
+      const limit = Math.max(1, Math.min(Number(u.searchParams.get('limit')) || 200, 500));
+      const g = INCIDENT.groupIncidents({ from, to, limit });
+      return send(res, 200, {
+        ok: true, from, to,
+        stats: INCIDENT.incidentStats(),
+        /* 被限流压掉、还没交出去的条数。不显示它的话，
+           「日志里只有 20 条」会被当成「只发生了 20 次」。 */
+        suppressed: INCIDENT.suppressed(),
+        ...g
+      });
+    }
+
+    /* ── 运维：问题单清扫 ──
+       保留期口径和审计一致（默认 30 天，0 = 明确不清理）。 */
+    if (u.pathname === '/api/admin/incident-sweep' && (req.method === 'GET' || req.method === 'POST')) {
+      if (!adminOK(req, u)) return send(res, 403, { ok: false, error: 'key 不对或不是管理员' });
+      if (req.method === 'GET') return send(res, 200, { ok: true, stats: INCIDENT.incidentStats() });
+      const b = await readBody(req, 8 * 1024);
+      const r = INCIDENT.sweepIncidents({ dryRun: !!b.dryRun, keepDays: b.keepDays });
+      return send(res, 200, { ok: true, ...r, stats: INCIDENT.incidentStats() });
     }
 
     /* ── 运维：审计清扫 ──

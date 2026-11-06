@@ -582,6 +582,25 @@
           ? `（重发三次仍命中规则 ${rule}，把它补进 WAF_HITS 就行）`
           : '（这次已经洗到没有已知触发词，仍被拦：说明网关还有一类没探到的规则）');
     }
+    /* 上报到问题单。分类必须在这里做：外面只看得见一句被压扁的文案，
+       分不出「被网关拦」和「超时」，而这两件该找的人完全不同。
+       注意 e.waf 是 llm.js 打的标记——没有它，网关拦截会被当成普通 403，
+       然后所有人一起往「额度」上猜（真事，猜了三次）。 */
+    if (window.INC && typeof window.INC.report === 'function') {
+      try {
+        const m = String((last && last.message) || '');
+        const code = (last && last.waf) ? 'E_LLM_GATE'
+          : /\b429\b|额度|quota|insufficient/i.test(m) ? 'E_LLM_QUOTA'
+          : /timeout|超时|ETIMEDOUT|aborted/i.test(m) ? 'E_LLM_TIMEOUT'
+          : /空|empty/i.test(m) ? 'E_LLM_EMPTY'
+          : 'E_UNKNOWN';
+        window.INC.report(code, m, {
+          where: 'chatStream',
+          stack: last && last.stack ? last.stack : [],
+          extra: { status: (last && (last.status || last.code)) || 0, tries: 3 }
+        });
+      } catch { /* 上报不能影响主流程 */ }
+    }
     throw last;
   }
 
