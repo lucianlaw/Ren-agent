@@ -119,6 +119,57 @@ node scripts/release.mjs --check             # 确认这版是好的
 
 六张表都开了 RLS，客户端从不发送 `owner_id`，由数据库 `DEFAULT auth.uid()` 填。
 
+## 服务端状态库与迁移
+
+云库管业务数据；**「谁在跑什么、谁占着哪个文件、这一分钟打了几次」放在本机 SQLite**
+（`node:sqlite`，零依赖），位置是部署目录同级的 `.ren-state/state.db`。
+它比密钥更不能丢——丢了不是「要重登一次」，是「所有人正在跑的任务变成幽灵」。
+
+表结构不再是 `openDb()` 里的一大段字符串常量，而是 `db/migrations/NNN_*.sql`：
+
+```bash
+node scripts/migrate.mjs --status    # 现在跑到第几份、有没有被改过的
+node scripts/migrate.mjs --dry       # 预演，连库文件都不建
+node scripts/migrate.mjs             # 真跑（服务启动时也会自动跑一遍）
+```
+
+- 跑过的迁移记在 `schema_migrations`（编号 + 文件名 + sha256 + 耗时）。
+- **老库**（没有台账的时代建的）按 `meta.schema` 认账为 baseline，不重跑，只补缺的那几份。
+- 已应用的迁移文件被改过 → 报 `drift`，**不会重跑**。改 schema 请补一份新的。
+- `/api/health?key=…` 的 `schema` 字段给出当前版本、这次应用了哪些、有没有漂移。
+
+## 删除、注销与导出
+
+| 动作 | 语义 | 可恢复 |
+|---|---|---|
+| 删除文件 / 清空工作区 | 移进 `<工作区>/.trash/`，带 `meta.json` 记原路径 | 是（回收站里点恢复） |
+| 清空回收站 | 真删 | 否 |
+| 注销 | 工作区（含回收站）+ 记忆 + 状态库痕迹 + 用量记录，全删 | 否（要手打 `DELETE` 确认） |
+| 导出 | 工作区打成 tar.gz 下载，不加密（用户要能自己解开） | — |
+
+注销**不删**审计日志与整机备份：前者是合规凭证（默认 30 天自动清），后者不是某个账号的私有文件。
+接口返回里明说这两条（`auditKept` / `note`），不假装删干净了。
+
+## 运维面（都要 `/api/health?key=…` 或运维 key）
+
+| 项 | 位置 | 看什么 |
+|---|---|---|
+| 请求指标 | `/api/metrics`、health.metrics | 每路由 p50/p95/max、错误率、QPS、最近慢请求 |
+| 审计保留期 | `/api/admin/audit-sweep`（GET 看现状 / POST 真扫） | 多少天、多重、上次清了多少 |
+| 备份 | `/api/admin/backup`、health.backup | 加密没有、是不是同机、上次校验结果 |
+| 状态库 | `scripts/migrate.mjs --status`、health.schema | 迁移版本与漂移 |
+
+相关环境变量：
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `AUDIT_KEEP_DAYS` | `30` | 审计日分片保留天数；`0` = 明确不清理 |
+| `REN_BACKUP_PASSPHRASE` | 空（不加密） | 设了就整包 AES-256-GCM；**恢复必须给同一个口令** |
+| `REN_BACKUP_DIR` | `../.ren-backups` | 备份目录，刻意在部署目录之外 |
+| `REN_STATE_DIR` | `../.ren-state` | 状态库目录 |
+| `REN_MIGRATE_LOG` | 空 | 设成任意值则启动时打印迁移过程 |
+
+
 员工都带 `core`（核心）标记，核心员工在召集会议时默认被勾选。本期所有员工都是 AI（`kind` 一律 `ai`），真人成员的入口已移除。
 
 ## 员工档案与知识库

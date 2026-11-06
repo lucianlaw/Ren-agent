@@ -896,6 +896,9 @@ $('#crExit').onclick = async () => {
   if (state.guest) { showLogin(); return; }
   if (!confirm('退出登录？')) return;
   await CLOUD.signOut();
+  /* 退出就该回到「这台机器上没有我对任何偏好」的状态：
+     下一个人（或者我自己换个账号）不该看到上一个账号的员工选择、例行任务和自定义工具。 */
+  clearLocalPrefs();
   location.reload();
 };
 /* 记忆入口（保留原「记忆」功能，移入头像浮层） */
@@ -1040,6 +1043,23 @@ async function checkAdmin() {
   return state.isAdmin;
 }
 
+/* ── 本地偏好：退出要清，换账号更要清 ──
+   以前退出登录只清 SDK 会话，`boss.*` 这些（员工选择、主题、例行任务、预算续杯、
+   自定义工具）全留在浏览器里。同一台机器换个账号登进来，看到的是上一个人的偏好——
+   不致命但很吓人，尤其「自定义工具」里还存着 URL 和参数名。
+   保留两个不属于「某个人」的键：bossScope（游客工作区标识）、ren_device（设备标识）。 */
+function clearLocalPrefs() {
+  try {
+    const kill = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i) || '';
+      if (/^boss\./.test(k)) kill.push(k);
+    }
+    for (const k of kill) localStorage.removeItem(k);
+    return kill.length;
+  } catch (e) { return 0; }
+}
+
 async function enterApp() {
   hideLogin();
   state.guest = false;
@@ -1072,6 +1092,21 @@ async function enterApp() {
   /* 登录之后才拿得到 uid：工作区从「本机随机串」切成「账号目录」，
      换设备、清缓存都还连同一份文件。游客态保持本机随机串。 */
   state.scope = ensureScope();
+  /* 换账号检测：同一个浏览器上一位用户留下的偏好不该带到下一位身上。
+     只在「之前记过别人、现在不是他」时清；第一次登录（没有记录）不动任何东西，
+     否则升级后第一次打开会被莫名清一遍。 */
+  if (!state.guest) {
+    try {
+      const uid = String(state.scope || '');
+      const prev = localStorage.getItem('boss.lastUid') || '';
+      if (prev && uid && prev !== uid) {
+        const n = clearLocalPrefs();
+        if (n) toast(`检测到换了账号，已清掉上一位的 ${n} 项本地偏好`);
+      }
+      /* 必须写在清理之后：boss.lastUid 自己也以 boss. 开头 */
+      if (uid) localStorage.setItem('boss.lastUid', uid);
+    } catch (e) { /* 隐私模式读不到 localStorage，忽略 */ }
+  }
 
   const u = CLOUD.user();
   if (!state.serverOff) $('#banner').hidden = true;
@@ -7982,6 +8017,133 @@ async function saveQuotaBox() {
 }
 if ($('#quotaSave')) $('#quotaSave').onclick = saveQuotaBox;
 
+/* ══════════ 我的数据：导出 / 清空工作区 / 回收站 ══════════
+   这三件事以前一件都没有：想清掉旧产出只能找运维上机器 rm，想带走也带不走。
+   现在的分工是——「清空工作区」把东西移进回收站（可恢复），
+   「清空回收站」才是真删。不可逆的动作只允许出现在最后一个按钮上。 */
+function dataSize(n) {
+  const b = Number(n) || 0;
+  if (b >= 1048576) return (b / 1048576).toFixed(1) + 'MB';
+  if (b >= 1024) return (b / 1024).toFixed(0) + 'KB';
+  return b + 'B';
+}
+
+async function dataPost(url, body) {
+  const r = await fetch(window.withSC(url), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {})
+  });
+  const j = await r.json().catch(() => null);
+  if (!r.ok || !j || !j.ok) throw new Error((j && j.error) || ('HTTP ' + r.status));
+  return j;
+}
+
+async function refreshTrashBox() {
+  const box = $('#trashBox');
+  if (!box) return;
+  if (!state.scope || state.guest) { box.hidden = true; return; }
+  try {
+    const r = await fetch(window.withSC('/api/trash?scope=' + encodeURIComponent(state.scope)));
+    const j = await r.json().catch(() => null);
+    if (!r.ok || !j || !j.ok) throw new Error('读不到');
+    const items = Array.isArray(j.items) ? j.items : [];
+    if (!items.length) { box.hidden = true; box.innerHTML = ''; return; }
+    box.hidden = false;
+    box.innerHTML = `<div class="trash-h">回收站 ${items.length} 项 · ${dataSize(j.bytes)}</div>`
+      + items.slice(0, 8).map(it => `<div class="trash-r">`
+        + `<span class="trash-p" title="${esc(it.path || '')}">${esc(it.path || '(没有记录原路径)')}</span>`
+        + `<span class="trash-t">${esc(String(it.at || '').slice(0, 16).replace('T', ' '))}</span>`
+        + `<b class="trash-b" data-restore="${esc(it.id)}">恢复</b></div>`).join('');
+  } catch (e) {
+    /* 读不到就不显示：这只是设置里的一个小方块，不该因为它报错弹窗 */
+    box.hidden = true;
+  }
+}
+
+if ($('#dataExport')) {
+  $('#dataExport').onclick = () => {
+    if (!state.scope) { toast('还没登录，没有可导出的文件'); return; }
+    /* 走浏览器原生下载：这是浏览器自己发的 GET，withSC 会补上签名 */
+    location.href = window.withSC('/api/export?scope=' + encodeURIComponent(state.scope));
+    toast('正在打包，下载会自己开始');
+  };
+}
+
+if ($('#dataClear')) {
+  $('#dataClear').onclick = async () => {
+    if (!confirm('把工作区里的所有文件移进回收站？删掉之后还能从下面的回收站恢复。')) return;
+    const btn = $('#dataClear');
+    btn.disabled = true;
+    try {
+      const j = await dataPost('/api/workspace/clear', { scope: state.scope });
+      toast(`已移进回收站 ${(j.moved || []).length} 项${j.bytes ? '（' + dataSize(j.bytes) + '）' : ''}，可以恢复`);
+      await refreshTrashBox();
+    } catch (e) {
+      toast('没清掉：' + String((e && e.message) || e).slice(0, 120));
+    } finally { btn.disabled = false; }
+  };
+}
+
+if ($('#dataEmptyTrash')) {
+  $('#dataEmptyTrash').onclick = async () => {
+    /* 这是整个应用里唯一不可逆的按钮，所以确认文案必须说清楚「不能恢复」 */
+    if (!confirm('清空回收站？这一步不能撤销，里面的文件会真的被删掉。')) return;
+    const btn = $('#dataEmptyTrash');
+    btn.disabled = true;
+    try {
+      const j = await dataPost('/api/trash/empty', { scope: state.scope });
+      toast(`已彻底删除 ${j.removed || 0} 项${j.bytes ? '，腾出 ' + dataSize(j.bytes) : ''}`);
+      await refreshTrashBox();
+    } catch (e) {
+      toast('没清掉：' + String((e && e.message) || e).slice(0, 120));
+    } finally { btn.disabled = false; }
+  };
+}
+
+/* 恢复：列表里点哪条恢复哪条。目标已有同名文件时服务端会拒绝并说明原因——
+   静默覆盖比不恢复更糟。 */
+if ($('#trashBox')) {
+  $('#trashBox').addEventListener('click', async (ev) => {
+    const el = ev.target && ev.target.closest ? ev.target.closest('[data-restore]') : null;
+    if (!el) return;
+    const id = el.getAttribute('data-restore');
+    if (!id) return;
+    try {
+      const j = await dataPost('/api/trash/restore', { scope: state.scope, id });
+      toast('已恢复 ' + (j.path || ''));
+      await refreshTrashBox();
+    } catch (e) {
+      toast('没恢复成：' + String((e && e.message) || e).slice(0, 120));
+    }
+  });
+}
+
+/* 注销：唯一一个「删完就没了、连回收站都不进」的动作。
+   所以它要过三关：先 confirm、再让用户手打 DELETE、最后服务端也校验这句口令。
+   三关看着多余，但这一个按钮后面是别人的合同和报价表——多按一下回车不冤。 */
+if ($('#dataPurge')) {
+  $('#dataPurge').onclick = async () => {
+    if (!confirm('注销并删除全部数据？\n\n文件、记忆、任务记录、用量记录会一起被删，不进回收站，删完不能恢复。\n（想留一份就先点「导出我的文件」。）')) return;
+    const say = prompt('确认请手打 DELETE（大写）：');
+    if (String(say || '').trim().toUpperCase() !== 'DELETE') { toast('已取消'); return; }
+    const btn = $('#dataPurge');
+    btn.disabled = true;
+    try {
+      const j = await dataPost('/api/account/purge', { scope: state.scope, confirm: 'DELETE' });
+      /* 服务端删完之后本地也必须清：不然下一次打开看到的是上一个人的员工选择 */
+      clearLocalPrefs();
+      try { localStorage.removeItem('bossScope'); } catch (e) { /* 忽略 */ }
+      toast(`已删除 ${j.files || 0} 个文件${j.bytes ? '（' + dataSize(j.bytes) + '）' : ''}，正在退出`);
+      await CLOUD.signOut().catch(() => {});
+      setTimeout(() => location.reload(), 800);
+    } catch (e) {
+      toast('没删成：' + String((e && e.message) || e).slice(0, 140));
+      btn.disabled = false;
+    }
+  };
+}
+
 function openSettings() {
   const opts = state.models.length
     ? state.models.map(m => `<option value="${esc(m.id)}" ${m.id === state.settings.model ? 'selected' : ''}>${esc(m.name || m.id)}${m.supportsToolCall === false ? '（无工具调用）' : ''}</option>`).join('')
@@ -8003,6 +8165,8 @@ function openSettings() {
   /* 打开就拉一次真实用量：这块数字必须当场是准的，
      不能是「上次打开时」的缓存——老板就是冲着它来的。 */
   refreshQuotaBox();
+  /* 回收站同理：后台异步拉，读不到就把方块藏起来，不耽误设置弹窗打开 */
+  refreshTrashBox();
   const cb = $('#cloudBackup');
   if (cb) cb.checked = cloudBackupOn();
   $('#setModal').hidden = false;

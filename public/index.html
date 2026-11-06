@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ren Agent</title>
-<link rel="stylesheet" href="./app.css?v=20261106B">
-<link rel="stylesheet" href="./admin.css?v=20261106B">
+<link rel="stylesheet" href="./app.css?v=20261106C">
+<link rel="stylesheet" href="./admin.css?v=20261106C">
 <script>
 /* 首帧就定好深浅色：启动屏是第一个可见画面，不能先白后黑闪一下 */
 try { if (localStorage.getItem('boss.theme') === 'dark') document.documentElement.classList.add('dark'); } catch (e) {}
@@ -726,6 +726,23 @@ try { if (localStorage.getItem('boss.theme') === 'dark') document.documentElemen
         <input id="cronAt" placeholder="每天几点" value="09:00">
         <button class="btn" id="cronAdd">添加任务</button>
       </div>
+
+      <!-- 我的数据：删得掉、拿得走。
+           在这之前两件都没有——想清掉一份旧报价表只能找运维上机器 rm，
+           于是「不能删数据」这条一直挂着。现在删除先进回收站，能恢复；
+           「清空回收站」才是真删，所以它单独一个按钮、单独确认。 -->
+      <h3 class="set-h">我的数据</h3>
+      <p class="sub">删掉的东西先进回收站，还能恢复；「清空回收站」才是真删。导出是一个 tar.gz，里面只有你自己工作区的文件，不含审计和额度。</p>
+      <div class="data-acts">
+        <button class="btn ghost sm" id="dataExport" type="button">导出我的文件</button>
+        <button class="btn ghost sm" id="dataClear" type="button">清空工作区</button>
+        <button class="btn ghost sm" id="dataEmptyTrash" type="button">清空回收站</button>
+        <button class="btn ghost sm danger" id="dataPurge" type="button">注销并删除全部数据</button>
+      </div>
+      <div class="trash-box" id="trashBox" hidden></div>
+      <p class="sub" style="margin-top:10px">「注销」和上面三个不一样：它不经过回收站，文件、记忆、任务记录、用量记录一起删，
+        删完这个账号在这台机器上就查不到任何东西。审计日志（只有时间、动作、文件名）和整机备份会留下，
+        前者 30 天后自动清，后者要走运维流程。</p>
     </div>
     <div class="modal-foot">
       <button class="btn ghost" data-close>取消</button>
@@ -977,23 +994,23 @@ try { if (localStorage.getItem('boss.theme') === 'dark') document.documentElemen
   </div>
 </div>
 
-<script src="./cloud-config.js?v=20261106B"></script>
-<script src="./cloud.js?v=20261106B"></script>
-<script src="./session.js?v=20261106B"></script>
-<script src="./localfs.js?v=20261106B"></script>
-<script src="./roles.js?v=20261106B"></script>
-<script src="./states.js?v=20261106B"></script>
-<script src="./contract.js?v=20261106B"></script>
-<script src="./traits.js?v=20261106B"></script>
-  <script src="./nameorder.js?v=20261106B"></script>
-<script src="./attach.js?v=20261106B"></script>
-<script src="./voice.js?v=20261106B"></script>
-<script src="./judge.js?v=20261106B"></script>
-<script src="./evalkit.js?v=20261106B"></script>
-<script src="./agent.js?v=20261106B"></script>
-<script src="./meeting.js?v=20261106B"></script>
-<script src="./review.js?v=20261106B"></script>
-<script src="./app.js?v=20261106B"></script>
-<script src="./admin.js?v=20261106B"></script>
+<script src="./cloud-config.js?v=20261106C"></script>
+<script src="./cloud.js?v=20261106C"></script>
+<script src="./session.js?v=20261106C"></script>
+<script src="./localfs.js?v=20261106C"></script>
+<script src="./roles.js?v=20261106C"></script>
+<script src="./states.js?v=20261106C"></script>
+<script src="./contract.js?v=20261106C"></script>
+<script src="./traits.js?v=20261106C"></script>
+  <script src="./nameorder.js?v=20261106C"></script>
+<script src="./attach.js?v=20261106C"></script>
+<script src="./voice.js?v=20261106C"></script>
+<script src="./judge.js?v=20261106C"></script>
+<script src="./evalkit.js?v=20261106C"></script>
+<script src="./agent.js?v=20261106C"></script>
+<script src="./meeting.js?v=20261106C"></script>
+<script src="./review.js?v=20261106C"></script>
+<script src="./app.js?v=20261106C"></script>
+<script src="./admin.js?v=20261106C"></script>
 </body>
 </html>

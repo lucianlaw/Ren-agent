@@ -2714,3 +2714,33 @@ body.dark .mt-no-hd{border-bottom-color:#2a3442}
 .mt-pv b{color:var(--text);font-variant-numeric:tabular-nums}
 body.dark .mt-planver{border-top-color:#2a3442}
 body.dark .mt-pv{border-top-color:#232c38}
+
+/* ── 我的数据：四个按钮 + 回收站列表 ──
+   放在设置最下面，因为它不是日常操作。回收站列表默认收着（hidden），
+   只有真的有东西时才展开——一个空的框子只会让人以为坏了。
+   「注销」用红色：这一排里只有它不可逆，颜色必须先说话。 */
+.data-acts{display:flex;gap:8px;flex-wrap:wrap;margin:2px 0 6px}
+.data-acts .btn{font-size:11.5px}
+.btn.ghost.danger{color:var(--red)}
+.btn.ghost.danger:hover{background:var(--red-soft);color:var(--red)}
+.trash-box{
+  border:1px solid var(--line);border-radius:8px;background:var(--card);
+  max-height:168px;overflow:auto;margin-top:4px;
+}
+.trash-h{
+  position:sticky;top:0;background:var(--soft);color:var(--sub);
+  font-size:10.5px;padding:5px 9px;border-bottom:1px solid var(--line2);
+  font-variant-numeric:tabular-nums;
+}
+.trash-r{
+  display:flex;align-items:center;gap:8px;padding:5px 9px;
+  border-bottom:1px solid var(--line2);font-size:11.5px;
+}
+.trash-r:last-child{border-bottom:none}
+.trash-p{
+  flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);
+}
+.trash-t{flex:0 0 auto;color:var(--mute);font-size:10px;font-variant-numeric:tabular-nums}
+.trash-b{flex:0 0 auto;color:var(--blue);cursor:pointer;font-weight:500;font-size:11px}
+.trash-b:hover{text-decoration:underline}
+body.dark .trash-box{background:#1b1f26}

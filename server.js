@@ -14,6 +14,7 @@
 //   3. 工具本身带路径围栏 + shell 黑名单 + 权限闸（权限以服务端记录为准，前端只能收紧）
 import http from 'node:http';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -31,7 +32,8 @@ import {
   readDoc, appendEntries, deleteEntry, clearDoc, replaceCompany, updateEntry,
   approveEntry, writeProjectTitle, listStaff, listProjects, memoryBrief, MEMORY_KINDS, MEMORY_TYPES
 } from './lib/memory.js';
-import { toolAudit, writeAudit, readAudit } from './lib/audit.js';
+import { toolAudit, writeAudit, readAudit, auditStats, sweepAudit } from './lib/audit.js';
+import * as METRICS from './lib/metrics.js';
 import { addAlert, listAlerts, ackAlerts, ADMIN_EMAIL, ALERTS_KEY } from './lib/alerts.js';
 import { probeRuntime, runtimeWord, hardenAll, uidForScope, runIsolated } from './lib/sandbox.js';
 import { secretStatus, secretDirInfo, secretDir } from './lib/config.js';
@@ -40,7 +42,9 @@ import {
   quotaReport, reconcileShell, isFrozen, freeze, thaw, setLimits, limitsOf,
   listScopes, quickStats, usageDir, allLimitOverrides, fmtBytes
 } from './lib/quota.js';
-import { runBackup, verifyBackup, backupStatus, listBackups, scheduleBackups } from './lib/backup.js';
+import { runBackup, verifyBackup, backupStatus, listBackups, scheduleBackups, exportTree } from './lib/backup.js';
+import * as TRASH from './lib/trash.js';
+import { purgeAccount } from './lib/purge.js';
 import { streamProbe, probeHistory, probeBusy, probeSummary } from './lib/probe.js';
 import { previewOffice } from './lib/office.js';
 import { digestFiles } from './lib/digest.js';
@@ -315,6 +319,9 @@ const AUTH_MODE = String(process.env.REN_AUTH_MODE || 'strict').toLowerCase() ==
 /* 身份闸门的计数：上线后不打开浏览器也能知道「验签到底通没通」。
    只记次数，不记任何人。看 /api/health 就能读出这三个数。 */
 const AUTH_STATS = { verified: 0, fk: 0, rejected: 0, lastCode: '' };
+/* 审计清扫的最近一次结果 + 定时器句柄：health 里要能看到「上一次到底删了几个」，
+   否则「有保留期」和「没保留期」在页面上看不出区别。 */
+const AUDIT_SWEEP = { last: null, timer: null };
 function bumpAuth(k, code) {
   AUTH_STATS[k] = (AUTH_STATS[k] || 0) + 1;
   if (code) AUTH_STATS.lastCode = String(code);
@@ -421,8 +428,10 @@ async function resolveAuth(req, u) {
   return { ok: false, code: 401, errCode: 'auth_required', error: '这个请求没有携带登录凭证' };
 }
 
-/* 不需要身份就能访问的接口：存活探测、以及拿凭证来换身份的那一条 */
-const PUBLIC_API = new Set(['/api/health', '/api/session', '/api/auth-diag']);
+/* 不需要身份就能访问的接口：存活探测、以及拿凭证来换身份的那一条。
+   /api/auth-diag 曾经在这里——它是排查身份问题时的临时出口，
+   问题修完之后就成了「免登录试探凭证」的入口，2026-11-06 移出，改要运维 key。 */
+const PUBLIC_API = new Set(['/api/health', '/api/session']);
 
 /* 身份「可选」的接口：带了凭证就认，不带也不在这里拦——凭证由处理器自己判。
    目前只有告警队列两条：消费方是 09:00 的定时任务（curl 出发，没有浏览器登录态），
@@ -433,7 +442,11 @@ const OPTIONAL_AUTH = new Set(['/api/alerts', '/api/alerts/ack', '/api/sandbox-c
   /* 运维接口：调用方可能是 cron（curl，没有浏览器登录态），凭证是随机落盘的运维 key。
      放进这个集合的语义是「闸门照常验，验不过也交给 handler 自己判」，
      不是「不需要凭证」——handler 里 adminOK 会逐条核对 key 或管理员身份。 */
-  '/api/admin/quota', '/api/admin/backup', '/api/admin/backup/verify', '/api/admin/stream-probe']);
+  '/api/admin/quota', '/api/admin/backup', '/api/admin/backup/verify', '/api/admin/stream-probe',
+  /* 诊断出口：从 PUBLIC_API 挪到这里（不再免身份），handler 里只认运维 key。
+     放 OPTIONAL_AUTH 而不是删掉：闸门先验一遍、验不过也交下去，
+     这样拿着 key 的 cron 能直接 curl，而不必先有一个浏览器登录态。 */
+  '/api/auth-diag', '/api/admin/audit-sweep', '/api/metrics']);
 
 
 /* ── 内部调用凭证 ──
@@ -586,6 +599,19 @@ function clientMeta(req) {
 
 /* ── 路由 ── */
 const server = http.createServer((req, res) => {
+  /* 请求级指标：进来记开始时间，response 结束记一条。
+     挂在 createServer 上而不是每个 handler 里——挂在 handler 里就一定会漏，
+     而「漏了的那几个端点」往往正是出问题的那些。
+     route 用去掉查询串的路径：/api/file?path=a 和 ?path=b 是同一条。 */
+  const t0 = process.hrtime.bigint();
+  const path0 = (() => { try { return new URL(req.url, 'http://127.0.0.1').pathname; } catch { return '/'; } })();
+  res.on('finish', () => {
+    try {
+      const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+      const len = Number(res.getHeader('content-length') || 0);
+      METRICS.record(path0, ms, res.statusCode, len);
+    } catch { /* 记指标不能影响响应 */ }
+  });
   /* 每个请求一份身份上下文。用 ALS 而不是模块级变量：请求之间是交错执行的，
      一个全局「当前用户」在并发下会串号——那比没有鉴权还危险。 */
   ALS.run({ auth: null }, () => {
@@ -686,12 +712,30 @@ async function route(req, res) {
             /* 白名单式取值，新字段必须在这里显式放出来——
                第一次加这两个字段时就是漏了这一步，health 里看不到，
                排查时等于没有。 */
-            checks: b.checks, lastCheckAt: b.lastCheckAt
+            checks: b.checks, lastCheckAt: b.lastCheckAt,
+            /* 这两个是「备份到底算不算备份」的关键：不加密 = 同一台机器上的明文副本，
+               同机 = 机器没了备份一起没。以前它们根本没出现在接口里。 */
+            encrypted: b.encrypted, sameHost: b.sameHost
           };
         })() : undefined,
+        /* 审计现状：只写不删曾经是清单第一条。这里给「多少天、多重、保留几天、
+           上次清掉了多少」四个数——磁盘会不会被日志吃满，看这四个数就够了。 */
+        audit: withKey ? {
+          ...auditStats(),
+          lastSweep: AUDIT_SWEEP.last
+            ? { deleted: AUDIT_SWEEP.last.deleted, bytes: AUDIT_SWEEP.last.bytes, kept: AUDIT_SWEEP.last.kept }
+            : null
+        } : undefined,
+        /* 请求级指标：在它之前，线上出问题的唯一证据是用户截图。
+           公开页不给（会暴露路由结构），带 key 的给一张摘要。 */
+        metrics: withKey ? { line: METRICS.line(), ...METRICS.summary({ limit: 8 }) } : undefined,
         /* 状态层：mode 是 memory 就说明这次降级了——磁盘上什么都没存。
            reaped 是本次启动收掉的中断任务数，非 0 意味着上次是非正常退出。 */
         state: withKey ? state.stats() : { mode: state.modeOf() },
+        /* schema 版本：状态库现在跑到第几份迁移、有没有「文件被改过」的漂移。
+           没有这一条，出问题时只能上机器 sqlite3 翻 schema_migrations——
+           而那台机器往往正是你连不上的那台。 */
+        schema: withKey ? (state.info().schema || null) : undefined,
         /* 最近一次长连接实测。result=never 意味着「从来没测过」——
            这不是错误，但它是一个应该被看见的状态：长连接是任务不中断的前提，
            而「没测过」和「测过且通过」在界面上长得一模一样。 */
@@ -727,6 +771,10 @@ async function route(req, res) {
       /* 只在真的出了问题、前端带着一张凭证来问时才干活：
          不带凭证就当没有这个接口，免得被当成「随便试探」的公共入口。 */
       if (req.method !== 'POST') return send(res, 404, { ok: false, error: 'not found' });
+      /* 2026-11-06 收口：它原来挂在 PUBLIC_API 里，任何人不用登录就能拿它去试探
+         「这张凭证在哪个应用下有效」。诊断价值早就用完了（那个问题已修），
+         留着一个免身份的信息出口没有理由——现在只有拿运维 key 的人能用。 */
+      if (!adminOK(req, u)) return send(res, 403, { ok: false, error: 'key 不对或不是管理员' });
       if (!rateOK(req)) return send(res, 429, { ok: false, error: '调用太频繁，缓一下' });
       const strip = (h) => {
         const m = /^Bearer\s+(.+)$/i.exec(String(h || ''));
@@ -1569,6 +1617,37 @@ async function route(req, res) {
       return send(res, r.ok ? 200 : 409, { ...r, file });
     }
 
+    /* ── 运维：请求级指标 ──
+       进程内的环形缓冲，不落盘：它回答的是「现在怎么样」，不是「上个月怎么样」。
+       带 ?reset=1 清零（压测前后各来一次，差值才干净）。 */
+    if (u.pathname === '/api/metrics' && req.method === 'GET') {
+      if (!adminOK(req, u)) return send(res, 403, { ok: false, error: 'key 不对或不是管理员' });
+      if (u.searchParams.get('reset') === '1') METRICS.reset();
+      const limit = Math.max(1, Math.min(Number(u.searchParams.get('limit')) || 12, 60));
+      return send(res, 200, { ok: true, line: METRICS.line(), ...METRICS.summary({ limit }) });
+    }
+
+    /* ── 运维：审计清扫 ──
+       GET 只报现状；POST 真扫（body 里 dryRun:true 就只说要删什么）。
+       为什么要有这个手动入口：保留期是「每天自动跑一次」的事，
+       上线后想当场确认它到底会不会删、删哪几个，只能靠它。 */
+    if (u.pathname === '/api/admin/audit-sweep' && (req.method === 'GET' || req.method === 'POST')) {
+      if (!adminOK(req, u)) return send(res, 403, { ok: false, error: 'key 不对或不是管理员' });
+      if (req.method === 'GET') return send(res, 200, { ok: true, stats: auditStats(), last: AUDIT_SWEEP.last });
+      const b = await readBody(req, 8 * 1024);
+      const r = sweepAudit({ dryRun: !!b.dryRun, keepDays: b.keepDays });
+      if (!r.dryRun) AUDIT_SWEEP.last = r;
+      if (!r.dryRun) {
+        writeAudit({
+          kind: 'audit_sweep', scope: '', action: '清理过期审计',
+          target: `${r.keepDays} 天前的分片`, ok: true, blocked: false, ms: 0,
+          output: `删除 ${r.deleted} 个文件 ${fmtBytes(r.bytes)}，保留 ${r.kept} 个`,
+          ...clientMeta(req)
+        });
+      }
+      return send(res, 200, { ok: true, ...r, stats: auditStats() });
+    }
+
     /* ── 运维：长连接探针 ──
        带 seconds 就开一条流，不带就返回历史。
        存在的理由：SSE 的三种失效（空闲超时 / 总时长上限 / 缓冲）在日志里全都看不出来，
@@ -1959,6 +2038,130 @@ async function route(req, res) {
       return send(res, 200, { ok: true, path: rel, text: r.text.slice(0, 200000), size: r.size });
     }
 
+    /* ── 删除 / 回收站 / 导出 ──
+       在这一组之前，「删掉」只有一种含义：真删，且没有任何入口。
+       用户要清掉一份报价表只能找运维上机器 rm —— 于是「不能删数据」这条一直挂着。
+       现在删除 = 移进 <工作区>/.trash/<id>/，能恢复；真腾空间是单独的「清空回收站」。
+       导出的存在理由是为了让人**敢删**：删之前能先拿走一份。 */
+    if (u.pathname === '/api/trash' && req.method === 'GET') {
+      const scope = scopeKey(u.searchParams.get('scope') || '');
+      const root = scopeRoot(scope);
+      if (!root) return send(res, 400, { ok: false, error: '工作区标识不合法' });
+      return send(res, 200, { ok: true, ...TRASH.listTrash(root) });
+    }
+    if (u.pathname === '/api/trash' && req.method === 'POST') {
+      const b = await readBody(req, 16 * 1024);
+      const scope = scopeKey(b.scope);
+      const root = scopeRoot(scope);
+      if (!root) return send(res, 400, { ok: false, error: '工作区标识不合法' });
+      const r = TRASH.moveToTrash(root, b.path);
+      if (r.ok) {
+        writeAudit({
+          kind: 'file_delete', scope, action: '删除文件', target: String(b.path || ''),
+          ok: true, blocked: false, ms: 0, output: `已移进回收站 ${r.id}（${fmtBytes(r.bytes)}）`,
+          ...clientMeta(req)
+        });
+      }
+      /* 磁盘占用要跟着变：删除腾出来的空间不该继续算在冻结判定里 */
+      if (r.ok && scope) noteDisk(scope, -Number(r.bytes || 0));
+      return send(res, r.ok ? 200 : 400, r);
+    }
+    if (u.pathname === '/api/trash/restore' && req.method === 'POST') {
+      const b = await readBody(req, 16 * 1024);
+      const scope = scopeKey(b.scope);
+      const root = scopeRoot(scope);
+      if (!root) return send(res, 400, { ok: false, error: '工作区标识不合法' });
+      const r = TRASH.restoreFromTrash(root, b.id);
+      if (r.ok) {
+        writeAudit({
+          kind: 'file_restore', scope, action: '从回收站恢复', target: r.path || '',
+          ok: true, blocked: false, ms: 0, output: '已恢复', ...clientMeta(req)
+        });
+      }
+      return send(res, r.ok ? 200 : 400, r);
+    }
+    if (u.pathname === '/api/trash/empty' && req.method === 'POST') {
+      const b = await readBody(req, 16 * 1024);
+      const scope = scopeKey(b.scope);
+      const root = scopeRoot(scope);
+      if (!root) return send(res, 400, { ok: false, error: '工作区标识不合法' });
+      /* 不可逆的一步：只在界面明确点「清空回收站」时才走这里 */
+      const r = TRASH.emptyTrash(root);
+      if (r.ok && scope) noteDisk(scope, -Number(r.bytes || 0));
+      writeAudit({
+        kind: 'file_delete', scope, action: '清空回收站', target: '',
+        ok: !!r.ok, blocked: false, ms: 0,
+        output: r.ok ? `真删 ${r.removed} 项 ${fmtBytes(r.bytes)}` : r.error,
+        ...clientMeta(req)
+      });
+      return send(res, r.ok ? 200 : 500, r);
+    }
+    if (u.pathname === '/api/workspace/clear' && req.method === 'POST') {
+      const b = await readBody(req, 16 * 1024);
+      const scope = scopeKey(b.scope);
+      const root = scopeRoot(scope);
+      if (!root) return send(res, 400, { ok: false, error: '工作区标识不合法' });
+      const r = TRASH.clearWorkspace(root);
+      if (r.ok && scope) noteDisk(scope, -Number(r.bytes || 0));
+      writeAudit({
+        kind: 'file_delete', scope, action: '清空工作区', target: '',
+        ok: !!r.ok, blocked: false, ms: 0,
+        output: r.ok ? `${r.moved.length} 项进回收站 ${fmtBytes(r.bytes)}` : r.error,
+        ...clientMeta(req)
+      });
+      return send(res, r.ok ? 200 : 500, r);
+    }
+    /* 注销：和「清空工作区」不是一件事。清空进回收站、还能恢复；
+       注销是真删，而且连记忆、状态库痕迹、用量记录一起删。
+       要求正文带一句确认口令，是因为这一步没有任何撤销路径——
+       只靠前端 confirm 不够，一个手滑的 curl 也能触发。 */
+    if (u.pathname === '/api/account/purge' && req.method === 'POST') {
+      const b = await readBody(req, 16 * 1024);
+      const scope = scopeKey(b.scope);
+      const say = String(b.confirm || '').trim().toUpperCase();
+      if (say !== 'DELETE' && say !== '删除') {
+        return send(res, 400, { ok: false, error: '要真的注销，请在确认框里输入 DELETE' });
+      }
+      /* 正在跑的任务不允许注销：删到一半的文件会让那一步崩，
+         而「任务还在跑却提示已注销」比拒绝更糟。 */
+      let running = 0;
+      for (const r of RUNS.values()) if (r.alive && r.scope === scope) running++;
+      const r = purgeAccount(scope, { running });
+      writeAudit({
+        kind: 'account', scope, action: '注销账号', target: '',
+        ok: !!r.ok, blocked: !r.ok, ms: 0,
+        output: r.ok ? `已删除 ${r.files} 个文件 ${fmtBytes(r.bytes)}` : r.error,
+        ...clientMeta(req)
+      });
+      return send(res, r.ok ? 200 : 400, r);
+    }
+    /* 导出：把自己工作区打成一个 tar.gz 下载走。
+       不带 .trash（那是删掉的东西），不含 data/（审计与额度是服务端的）。 */
+    if (u.pathname === '/api/export' && req.method === 'GET') {
+      const scope = scopeKey(u.searchParams.get('scope') || '');
+      const root = scopeRoot(scope);
+      if (!root) return send(res, 400, { ok: false, error: '工作区标识不合法' });
+      const tmp = path.join(os.tmpdir(), `ren-export-${scope.slice(0, 8)}-${Date.now()}.tar.gz`);
+      const r = await exportTree(tmp, { dir: root, prefix: 'files' });
+      if (!r.ok) return send(res, 400, r);
+      writeAudit({
+        kind: 'file_export', scope, action: '导出工作区', target: '',
+        ok: true, blocked: false, ms: 0,
+        output: `${r.files} 个文件 ${fmtBytes(r.bytes)}`, ...clientMeta(req)
+      });
+      const name = `ren-files-${new Date().toISOString().slice(0, 10)}.tar.gz`;
+      res.writeHead(200, {
+        'Content-Type': 'application/gzip',
+        'Content-Length': String(fs.statSync(tmp).size),
+        'Content-Disposition': `attachment; filename="${name}"`,
+        'Cache-Control': 'no-store'
+      });
+      const rs = fs.createReadStream(tmp);
+      rs.pipe(res);
+      rs.on('close', () => { try { fs.unlinkSync(tmp); } catch { /* 忽略 */ } });
+      return;
+    }
+
     /* ── 记忆 ──
      * 存在这个 scope 自己的目录下（memory/<scope>/），跟工作区分开：
      * 员工能读到注入进上下文的记忆，但不能用 write_file 直接改它——
@@ -2087,6 +2290,23 @@ server.listen(PORT, BIND, () => {
   console.log('  ────────────────────────────────────────────');
   console.log('  监听：  ' + BIND + ':' + PORT);
   console.log('  工作区：' + WORKSPACE_BASE);
+  /* 审计清扫：只写不删的话，data/ 会一路涨到把磁盘写满，备份也跟着变肥。
+     启动先扫一次（重启大多因为发布，等于每次发布顺带体检），之后每 6 小时一次。
+     结果写进启动日志——清理这件事「做过」和「没做过」在界面上长得一样。 */
+  const runAuditSweep = () => {
+    try {
+      const r = sweepAudit();
+      if (r.deleted) console.log(`  审计：  清掉 ${r.deleted} 个过期分片（${fmtBytes(r.bytes)}），保留 ${r.kept} 个`);
+      return r;
+    } catch (e) {
+      console.log('  审计：  清扫失败 ' + (e && e.message));
+      return null;
+    }
+  };
+  AUDIT_SWEEP.last = runAuditSweep();
+  if (AUDIT_SWEEP.timer) clearInterval(AUDIT_SWEEP.timer);
+  AUDIT_SWEEP.timer = setInterval(runAuditSweep, 6 * 3600 * 1000);
+  if (AUDIT_SWEEP.timer.unref) AUDIT_SWEEP.timer.unref();
   console.log('  循环：  ' + '在服务端跑（v0.4 起；浏览器只订阅事件流）');
   console.log('  身份：  ' + (AUTH_MODE === 'off'
     ? '⚠ 已关闭（REN_AUTH_MODE=off）—— 任何人都能读写任意工作区'

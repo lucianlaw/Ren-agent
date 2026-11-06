@@ -26,6 +26,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { findSecretFiles, APP_ROOT } from '../lib/config.js';
+import { nextVersion } from '../lib/version.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -151,6 +152,40 @@ say('─────────────────────────
     die('产物冒烟没通过', '', '这一份产物起不来，不该发布。');
   }
   pass('产物冒烟通过', `${out.match(/体积：(\S+)/)?.[1] || ''}`);
+}
+
+/* ── 版本号：从「我记得改」改成「发布时自动判」 ──
+   在它之前：版本号是手改的（`perl -pi -e 's/0.8.5/0.8.6/'`）。忘一次，线上就会出现
+   「代码是新的、health 说旧版本」——而那正是回滚时唯一的定位依据。
+   规则很简单：package.json 的版本必须**大于**上一次发布记录里的版本，
+   否则 patch +1 并提交。只增不减，比较的是数字而不是字符串（0.8.10 > 0.8.9）。
+   比较与递增的实现挪到了 lib/version.js：放在这里的话，那个文件一被 import
+   就会跑满四道门，于是它成了全程唯一没法测的一段。 */
+{
+  const pkgPath = path.join(ROOT, 'package.json');
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  let last = '';
+  try { last = JSON.parse(fs.readFileSync(path.join(ROOT, 'build.json'), 'utf8')).version || ''; } catch { /* 第一次发布 */ }
+  const pick = nextVersion(pkg.version, last);
+  if (pick.bumped) {
+    if (CHECK_ONLY) {
+      say(`  · 版本号该升了：${pkg.version} → ${pick.version}（--check 只提示，不改文件）`);
+    } else {
+      pkg.version = pick.version;
+      fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+      /* 必须提交：build.json 记的是 commit，而「这个 commit 里的版本号」才作数；
+         不提交的话下一次闸门第 1 道会直接挂（工作区不干净）。 */
+      git(['add', 'package.json']);
+      const c = git(['commit', '-m', `chore(version): ${pick.version}（发布时自动递增）`]);
+      if (c.code !== 0) {
+        die('版本号已改成 ' + pick.version + '，但提交失败', c.err.slice(0, 200),
+          '手动提交 package.json 之后重跑闸门。');
+      }
+      pass('版本号自动递增', `${pkg.version} → ${pick.version}`);
+    }
+  } else {
+    pass('版本号已递增', pkg.version + (last ? `（上次发布 ${last}）` : ''));
+  }
 }
 
 /* 写 build.json：这是「线上是哪个版本」的唯一来源 */
