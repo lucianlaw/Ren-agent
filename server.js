@@ -35,6 +35,7 @@ import {
 import { toolAudit, writeAudit, readAudit, auditStats, sweepAudit } from './lib/audit.js';
 import * as METRICS from './lib/metrics.js';
 import * as INCIDENT from './lib/incident.js';
+import * as TICKET from './lib/ticket.js';
 import * as DEVINFO from './lib/devinfo.js';
 import { addAlert, listAlerts, ackAlerts, ADMIN_EMAIL, ALERTS_KEY } from './lib/alerts.js';
 import { probeRuntime, runtimeWord, hardenAll, uidForScope, runIsolated } from './lib/sandbox.js';
@@ -162,6 +163,18 @@ function send(res, code, obj) {
     'X-Content-Type-Options': 'nosniff'
   });
   res.end(body);
+}
+
+/* 声明「这次 5xx 是预期内的拒绝，不是故障」。
+   用的地方很少，但每一个都不能漏：
+     · 上传时配额满 → 507（用户该删文件，没有代码要改）
+     · 写入被冻结 → 423（同上）
+   5xx 自动采集分不清这两种，而它分不清的代价很具体：这类条目会因为
+   「5xx 严重度最高」永久排在工单表第一，把真正该修的挤下去。
+   只有产生响应的人知道答案，所以在这里显式说一句。 */
+function expectReject(res) {
+  try { res._expected5xx = true; } catch { /* 忽略 */ }
+  return res;
 }
 
 function readBody(req, limit = 4 * 1024 * 1024) {
@@ -486,7 +499,11 @@ const OPTIONAL_AUTH = new Set(['/api/alerts', '/api/alerts/ack', '/api/sandbox-c
   /* 报错上报：必须是「可选身份」而不是「必须登录」。
      登录页自己崩掉的时候，用户手上根本没有凭证——要求先登录再报错，
      等于最该被记录的那类故障永远记不到。 */
-  '/api/incident', '/api/incidents', '/api/admin/incident-sweep']);
+  '/api/incident', '/api/incidents', '/api/admin/incident-sweep',
+  /* 工单：只认运维 key（handler 里 adminOK）。和 incidents 一样放这里而不是
+     直接删掉身份闸门——闸门照常验一遍，验不过也交下去，这样 cron 拿 key
+     就能 curl，不必先有浏览器登录态。 */
+  '/api/tickets', '/api/ticket', '/api/ticket/claim', '/api/ticket/settle']);
 
 
 /* ── 内部调用凭证 ──
@@ -652,8 +669,15 @@ const server = http.createServer((req, res) => {
       METRICS.record(path0, ms, res.statusCode, len);
       /* 5xx 自动进问题单：这是唯一能覆盖「所有端点」的挂钩点。
          漏了它的话，恰好是出问题的那些端点不会有记录——而它们往往
-         就是没写 try/catch 的那几个。 */
-      if (res.statusCode >= 500) {
+         就是没写 try/catch 的那几个。
+
+         但**不是所有 5xx 都是故障**。上传时用户配额满了返回 507 是正确行为：
+         用户该做的是删点文件，没有任何代码要改。这条如果进了工单表，它会
+         因为「5xx 严重度 3」直接排到第一，而且永远修不完——第一版就是这样，
+         本地 7 条真实报错全部归到了它，得分 31.5 排第一，实际是用户在传大文件。
+         谁产生响应，谁最清楚这一次是「出故障了」还是「按设计拒绝了」。
+         所以由 handler 用 expectReject() 显式声明，而不是在这里猜。 */
+      if (res.statusCode >= 500 && !res._expected5xx) {
         const au = (() => { try { return currentAuth(); } catch { return null; } })();
         INCIDENT.report({
           code: 'E_HTTP_5XX', layer: 'server', route: path0, where: 'http',
@@ -794,6 +818,10 @@ async function route(req, res) {
           suppressed: INCIDENT.suppressed(),
           crashes: UNCAUGHT.n
         },
+        /* 工单现状：open 是「没人管」，fixed 是「等复核」。
+           fixed 这个数就是整条链路的瓶颈——它积起来，说明修的速度超过复核的速度，
+           那时候该加的是复核，不是让它多修。 */
+        tickets: withKey ? TICKET.ticketStats() : undefined,
         /* 状态层：mode 是 memory 就说明这次降级了——磁盘上什么都没存。
            reaped 是本次启动收掉的中断任务数，非 0 意味着上次是非正常退出。 */
         state: withKey ? state.stats() : { mode: state.modeOf() },
@@ -1733,6 +1761,68 @@ async function route(req, res) {
       });
     }
 
+    /* ── 运维：工单 ──
+       和 /api/incidents 的区别：incidents 是「事实」（现算的统计），
+       tickets 是「事实 + 状态」（谁领了、修没修、复核过没）。
+       只看 incidents 的人会得到一个结论：每天都是同样的错误，但没人知道
+       上周那张单子到底处理了没有。 */
+    if (u.pathname === '/api/tickets' && req.method === 'GET') {
+      if (!adminOK(req, u)) return send(res, 403, { ok: false, error: 'key 不对或不是管理员' });
+      const to = u.searchParams.get('to') || new Date().toISOString();
+      const from = u.searchParams.get('from')
+        || new Date(Date.now() - 7 * 86400e3).toISOString();
+      const limit = Math.max(1, Math.min(Number(u.searchParams.get('limit')) || 100, 500));
+      const state = u.searchParams.get('state') || '';
+      const all = u.searchParams.get('dropped') === '1';
+      const r = TICKET.listTickets({ from, to, limit, state: state || undefined, includeDropped: all });
+      return send(res, 200, {
+        ok: true, from, to,
+        stats: TICKET.ticketStats(),
+        suppressed: INCIDENT.suppressed(),
+        ...r
+      });
+    }
+
+    /* 单张 + 任务模板。
+       task=1 时把「能直接交给 ren agent 的那段文字」一起返回——
+       这一段是这一步的产出物，列表只是索引。 */
+    if (u.pathname === '/api/ticket' && req.method === 'GET') {
+      if (!adminOK(req, u)) return send(res, 403, { ok: false, error: 'key 不对或不是管理员' });
+      /* 工单的短 id 用 `id`，**不能用 `key`**：`key` 已经是运维凭证的参数名，
+         两者共用一个名字的结果是「拿 key 查单必然 403」——而 403 看起来像
+         权限没配好，实际是参数撞了。 */
+      const sig = u.searchParams.get('sig') || u.searchParams.get('id') || '';
+      if (!sig) return send(res, 400, { ok: false, error: '要给 sig 或 id' });
+      const t = TICKET.getTicket(sig);
+      if (!t) return send(res, 404, { ok: false, error: '没有这张单子（签名不对，或已过保留期）' });
+      const wantTask = u.searchParams.get('task') === '1';
+      return send(res, 200, {
+        ok: true, ticket: t,
+        task: wantTask ? TICKET.toTaskPrompt(t) : undefined
+      });
+    }
+
+    /* 领取 / 结算。
+       两个动作都不做身份鉴权之外的事：谁在做由 admin key 决定，
+       body 里的 by 只是一个便于追问的名字，不当作权限依据。 */
+    if (u.pathname === '/api/ticket/claim' && req.method === 'POST') {
+      if (!adminOK(req, u)) return send(res, 403, { ok: false, error: 'key 不对或不是管理员' });
+      const b = await readBody(req, 8 * 1024);
+      const sig = String(b.sig || b.key || '');
+      if (!sig) return send(res, 400, { ok: false, error: '要给 sig 或 key' });
+      const r = TICKET.claim(sig, b.by);
+      return send(res, r.ok ? 200 : 409, r);
+    }
+
+    if (u.pathname === '/api/ticket/settle' && req.method === 'POST') {
+      if (!adminOK(req, u)) return send(res, 403, { ok: false, error: 'key 不对或不是管理员' });
+      const b = await readBody(req, 16 * 1024);
+      const sig = String(b.sig || b.key || '');
+      if (!sig) return send(res, 400, { ok: false, error: '要给 sig 或 key' });
+      const r = TICKET.settle(sig, { state: b.state, by: b.by, note: b.note });
+      return send(res, r.ok ? 200 : 409, r);
+    }
+
     /* ── 运维：问题单清扫 ──
        保留期口径和审计一致（默认 30 天，0 = 明确不清理）。 */
     if (u.pathname === '/api/admin/incident-sweep' && (req.method === 'GET' || req.method === 'POST')) {
@@ -1938,6 +2028,9 @@ async function route(req, res) {
          状态码分开：507 = 空间不够，423 = 写入被冻结（原因不同，用户要做的事也不同）。 */
       const room = checkDisk(scope, buf.length);
       if (!room.ok) {
+        /* 配额满 / 写入冻结都是设计好的拒绝，不是故障：用户要做的是删点文件
+           或等冻结解除，没有代码可修。标记之后就不进工单表。 */
+        expectReject(res);
         return send(res, room.code === 'disk_frozen' ? 423 : 507, {
           ok: false, code: room.code, error: room.error, quota: diskStatus(scope)
         });

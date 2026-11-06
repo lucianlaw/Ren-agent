@@ -56,7 +56,10 @@ async function boot() {
         LOCAL_ONLY: '1',
         ALERTS_KEY: KEY,
         REN_STATE_DIR: path.join(TMP, 'state'),
-        WORKSPACE_BASE: path.join(TMP, 'ws'),
+        /* WORKSPACE_DIR 才是 lib/workspace.js 认的变量名。
+           原来写的是 WORKSPACE_BASE —— 那个名字没人读，于是测试一直在往
+           项目的 workspace/ 目录写种子文件，而它看起来是全绿的。 */
+        WORKSPACE_DIR: path.join(TMP, 'ws'),
         AUDIT_DIR: path.join(TMP, 'audit'),
         INCIDENT_DIR: DIR,
         BACKUP_DIR: path.join(TMP, 'bk')
