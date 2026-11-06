@@ -118,6 +118,9 @@ console.log('\n[3] 排序：次数 × 严重度，而不是只看次数');
 console.log('\n[4] 状态机：不许跳步');
 {
   const sig = 'E_TOOL_FAIL|/api/x|writeFile';
+  /* 先把这条错报一次：工单是从报错归组里长出来的，凭空造一个签名
+     等于「领一张不存在的单子」，那正是这一版要挡的事。 */
+  I.report({ code: 'E_TOOL_FAIL', route: '/api/x', where: 'writeFile', msg: 'EACCES', scope: 'a'.repeat(32) });
   const c = T.claim(sig, 'ren-agent');
   ok('open → claimed 可以', c.ok === true, c);
   ok('记下了领取人', T.__test.loadState(sig).claimedBy === 'ren-agent');
@@ -157,9 +160,34 @@ console.log('\n[4] 状态机：不许跳步');
   eq('历史完整记录了每一次迁移', T.__test.loadState(sig).history.map(h => h.to).join('>'), 'open>claimed>fixed>claimed>fixed>verified');
 }
 
+console.log('\n[4b] 不存在的单子：不许凭空造出一条状态');
+{
+  /* 真实踩到的：把工单短号当签名传给 settle，它把短号当成一张新单子，
+     从 open 起算，顺利改成 dropped，还留下一个状态文件。回执看起来像成功，
+     而那张真单子还挂着——「线上那张单不能结算」这个结论就是这么来的。 */
+  const GHOST = '0123456789abcdef';
+  const c = T.claim(GHOST, 'ren');
+  ok('领一张不存在的单子被拒', c.ok === false, c);
+  ok('回 404 那个意思', c.code === 404, c.code);
+  ok('没留下状态文件', T.__test.loadState(GHOST) === null);
+
+  const s = T.settle(GHOST, { state: 'dropped', note: '配额满的正常拒绝' });
+  ok('结算一张不存在的单子被拒', s.ok === false, s);
+  ok('同样 404', s.code === 404, s.code);
+  ok('也没有留下状态文件', T.__test.loadState(GHOST) === null);
+
+  /* 有状态文件的单子走的是状态机判定，不会被存在性拦掉：
+     上一条已经是 verified（终态），所以拒的理由该是「当前状态不能领取」，不是 404 */
+  const live = 'E_TOOL_FAIL|/api/x|writeFile';
+  const c2 = T.claim(live, 'ren');
+  ok('有状态文件的照旧走状态机（不是 404）', c2.ok === false && c2.code !== 404, c2);
+  ok('理由是终态不能领', /verified/.test(String(c2.error)), c2.error);
+}
+
 console.log('\n[5] 状态落盘：原子、可读、不串号');
 {
   const sig = 'E_HTTP_5XX|/api/export|sendFile';
+  I.report({ code: 'E_HTTP_5XX', route: '/api/export', where: 'sendFile', msg: 'write EPIPE', scope: 'a'.repeat(32) });
   T.claim(sig, 'ren-agent');
   const key = T.keyOf(sig);
   const f = T.__test.fileOf(key);

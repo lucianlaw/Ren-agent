@@ -1930,7 +1930,9 @@ async function route(req, res) {
       const t = TICKET.getTicket(sig) || TICKET.listTickets({ limit: 500 }).tickets.find(x => x.key === sig);
       if (!t) return send(res, 404, { ok: false, error: `找不到这张单子：${sig}` });
       const r = TICKET.settle(t.sig, { state: b.state, by: b.by, note: b.note });
-      return send(res, r.ok ? 200 : 409, r);
+      /* 404 与 409 要分开：前者是「没有这张单子」，后者是「这张单子不能这么改」。
+         混成一个的话，传错参数看起来就像状态机不让改（本人踩过）。 */
+      return send(res, r.ok ? 200 : (r.code === 404 ? 404 : 409), r);
     }
 
     /* ── 自证 ──
