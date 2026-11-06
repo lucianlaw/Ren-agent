@@ -1,6 +1,6 @@
 {
   "name": "boss-agent",
-  "version": "0.8.7",
+  "version": "0.8.8",
   "private": true,
   "type": "module",
   "description": "老板下达任务、员工执行、每一步都可校验的 agent（云服务版：登录 / 数据 / 模型 / 存档全部走云）",
