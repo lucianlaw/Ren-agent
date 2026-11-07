@@ -533,3 +533,85 @@ curl -X POST "$URL/api/admin/state-sweep?key=$KEY" \
 现在：既没有状态文件、签名又不在报错归组里 → 404。
 `claim` 同一条（领一张不存在的单子会凭空造出「谁领了什么」）。
 接口层面也把 404 和 409 分开：前者是「没有这张单子」，后者是「这张单子不能这么改」。
+
+## 十四、把入口交到它手里
+
+到第十三节为止，链路是**能**走通的：看得见 → dev 闸门 → 工单 → 修复工作区 → 自证 → 分诊。
+但「能走通」和「它自己能走通」是两件事。
+
+差在最后一米：`scripts/heal.mjs` 是给手用的。让模型现拼 JSON，出错的地方永远是
+引号、转义、字段名——而错误回执看起来像「功能坏了」。它会开始换参数乱试，烧掉一整轮。
+
+所以有了 `lib/repairkit.js`：把复现一轮所需的最少动作，变成几个参数名固定的工具。
+
+### 为什么是五个，不是把十二条命令照搬
+
+工具定义每一轮都要进 prompt。十二条 × 每条两百字，就是每轮多付两千多字，
+而在 95% 的任务里它们一个都用不上。所以按**一轮的四步**切：
+
+| 工具 | 干什么 | 对应命令 |
+|---|---|---|
+| `repair_queue` | 看这一轮该修哪张、跳过谁为什么 | `triage` / `list` / `decisions` |
+| `repair_begin` | 建 worktree + 领单 + 给任务书 | `begin` / `next` |
+| `repair_look` | tree / read / grep，只读 | `tree` / `read` / `grep` |
+| `repair_change` | edit / write / diff / revert | `edit` / `write` / `diff` / `revert` |
+| `repair_finish` | prove / submit / abort | `prove` / `submit` / `abort` |
+
+参数名沿用 `edit_file` 的 `old_string` / `new_string` / `content`：
+模型对这三个名字已经有手感，换一套命名只会增加填错字段的概率。
+
+### 谁能拿到
+
+不是所有账号。`/api/tooldefs` 只在**同时**满足两条时把这五个并进清单：
+
+1. 这是 dev 实例（`REPAIR.available()`，生产恒 false）；
+2. 调用者能指认成维护者——浏览器里看 `uid`，服务端自己跑循环时看 `scope`
+   （那时身份是 internal，uid 是空的，唯一能指认「这是谁的活」的只有 scope）。
+
+拿不到时 /api/tool 直接调会分两种拒法，因为处置完全不同：
+
+| 情形 | 状态码 | 为什么不是另一个 |
+|---|---|---|
+| dev 实例但不是维护者 | 403 | 不是 404——那是「版本没上」，会让人去查部署 |
+| 生产实例 | 503 | 不是 403——403 会被读成「令牌/权限没配好」 |
+
+### 分类是 `none`
+
+五个工具的 `category` 全是 `none`。这不是偷懒：修复工作区改的是**仓库源码**，
+不属于任何账号的 workspace，用 read/write 那套开关去判只会判出错的结论。
+`none` 的实际作用是让前端别拦（前端逻辑是 `cat !== 'none' && !perm[cat]`），
+把判定交给服务端的 `repairKitOpen()`。
+
+### 它仍然不能自己宣布通过
+
+工具表里没有、也不会有 verify / approve / settle 这类动作（`repairkit-test` 逐条钉着）。
+`prove` 只给红/绿的证据，`submit` 只到 `fixed`。
+
+prove 红了会回 `verify.pass=false`——这个字段是给前端用的：它会把失败原因回灌给模型，
+模型据此接着改。**这不是「判它不过」，是「让它知道没成」**，两件事的区别在于
+谁写状态：写状态的是 `lib/repair.js`，不是它。
+
+### 两个实测踩到的细节
+
+**一、dry 不能装成「已经开好了」。** 第一版 `repair_begin {dry:true}` 的回执里，
+`branch` 和 `base` 打成了 `undefined`，看起来像工作区已经建好——下一步它会直接去 `look`，
+而那个目录根本不存在。现在没值就不打，并且明说「仓库没动」，末尾给真开的办法。
+
+**二、失败也必须有 output。** 模型只读 `output`，只给 `error` 字段它看不见，
+表现出来是「工具调了但什么都没回来」，然后它开始重复调同一个。
+所以 `runKit` 在 `ok:false` 且没有 output 时自动补一句「这一步没成：<原因>」。
+
+### 走一轮长什么样（工具口径）
+
+```
+repair_queue                                    → 这一轮该修 E_TOOL_FAIL（sig …）
+repair_begin                                    → key 3f2a…，分支 heal/3f2a…，任务书
+repair_look  {key, action:"grep", q:"runTool"}  → 定位到 server.js:1156
+repair_look  {key, action:"read", path:"…", from:1140}
+repair_change{key, action:"edit", path:"…", old_string:"…", new_string:"…"}
+repair_change{key, action:"diff"}               → 改了 1 个文件 + 红线检查结果
+repair_finish{key, action:"prove", test:"test/x-test.mjs"}   → 红→绿 成立
+repair_finish{key, action:"submit", note:"…"}   → fixed（不是 verified）
+```
+
+最后一步能到哪，就是这套东西的边界：**fixed 之后还是人来按。**

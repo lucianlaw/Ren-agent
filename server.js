@@ -23,7 +23,7 @@ import { TOOL_DEFS, TOOL_CATEGORY, runTool, runHttpTool } from './lib/tools.js';
 import { verifyStep, checkDeliverables } from './lib/verify.js';
 import { runAfterEdit } from './lib/selftest.js';
 import { SCOPE_RE, scopeRoot, ensureScope, listFiles, readTextFile, inside, WORKSPACE_BASE, markOwner, ownerOf } from './lib/workspace.js';
-import { identityOf, normUid } from './lib/identity.js';
+import { identityOf, normUid, scopeFor } from './lib/identity.js';
 import { verifyToken, fileKey, checkFileKey, warmSecret } from './lib/authn.js';
 import { jwtInfo } from './lib/llm.js';
 import { effectivePerms, savePerms, loadPerms, DEFAULT_PERMS } from './lib/perms.js';
@@ -39,6 +39,7 @@ import * as TICKET from './lib/ticket.js';
 import { runProof, saveProof, proofStats } from './lib/proof.js';
 import * as REPAIR from './lib/repair.js';
 import * as TRIAGE from './lib/triage.js';
+import { KIT_DEFS, KIT_CATEGORY, isKit, runKit } from './lib/repairkit.js';
 import * as DEVINFO from './lib/devinfo.js';
 import { addAlert, listAlerts, ackAlerts, ADMIN_EMAIL, ALERTS_KEY } from './lib/alerts.js';
 import { probeRuntime, runtimeWord, hardenAll, uidForScope, runIsolated } from './lib/sandbox.js';
@@ -156,6 +157,37 @@ function isAdmin(uid) {
   const id = String(uid || '').trim().replace(/^wu:/, '');
   if (!id) return false;
   return adminList().includes(id);
+}
+
+/* 这个工作区是不是某个管理员的。
+   为什么要按 scope 判：服务端自己跑循环时（lib/agent-host.js）请求身份是 internal，
+   uid 是空的——那时唯一还能指认「这是谁的活」的只有请求里的 scope。
+   scope 是 uid 的单向哈希，反推不出来，但正推能对上：把名单挨个算一遍比。 */
+function isAdminScope(scope) {
+  const s = String(scope || '');
+  if (!s) return false;
+  return adminList().some(a => scopeFor(normUid(a)) === s);
+}
+
+/* ── 修复工具开不开 ──
+   三条同时成立才开：dev 实例、调用者能指认成维护者、（命令行可用自审令牌）。
+   为什么不把「登录了」当够：普通账号登录了也不该看到改源码的工具。
+   为什么判定放在这里而不是 lib/repairkit.js：那一层连「谁是维护者」都不该知道，
+   它只负责把参数翻译成动作——边界放在有身份的地方，别的地方抄一份就会走样。 */
+function repairKitOpen(req, scope = '') {
+  const av = REPAIR.available();
+  if (!av.ok) return { ok: false, code: av.code, why: av.why };
+  const me = currentAuth();
+  if (me && me.internal) {
+    if (isAdminScope(scope)) return { ok: true, via: 'internal' };
+    return { ok: false, code: 403, why: '内部调用，但这个工作区不属于维护者' };
+  }
+  if (me && isAdmin(me.uid)) return { ok: true, via: 'admin' };
+  /* 命令行回退：与 /api/self/repair 共用同一个 self.key。
+     放在最后——有浏览器身份时先按身份判，避免「令牌配错了也能用」这种假绿。 */
+  const t = selfAuth(bearerOf(req));
+  if (t.ok) return { ok: true, via: 'self-token' };
+  return { ok: false, code: 403, why: '修复工作区只对维护者开放（这不是权限开关，是账号归属）' };
 }
 
 function send(res, code, obj) {
@@ -1041,9 +1073,20 @@ async function route(req, res) {
       return send(res, 200, { ok: true, admin: isAdmin((me && me.uid) || '') });
     }
 
-    /* 工具清单：浏览器要把它原样交给云端模型 */
+    /* 工具清单：浏览器要把它原样交给云端模型。
+       修复工具只在「dev 实例 + 维护者」时并进来——生产实例上它们根本不存在，
+       普通账号也看不到。这不是靠描述里的「请谨慎使用」来约束，而是不给。
+       注意前端把这份清单缓存在内存里（public/agent.js 的 TOOLS），
+       所以身份变了要刷新页面——这一点不该由清单动态化来兜，那会让每轮多一次请求。 */
     if (u.pathname === '/api/tooldefs') {
-      return send(res, 200, { ok: true, tools: TOOL_DEFS, categories: TOOL_CATEGORY });
+      const kit = repairKitOpen(req);
+      if (!kit.ok) return send(res, 200, { ok: true, tools: TOOL_DEFS, categories: TOOL_CATEGORY, repairKit: false });
+      return send(res, 200, {
+        ok: true,
+        tools: TOOL_DEFS.concat(KIT_DEFS),
+        categories: { ...TOOL_CATEGORY, ...KIT_CATEGORY },
+        repairKit: true
+      });
     }
 
     /* ── 只读自审：让 agent 读自己的源码 ──
@@ -1162,6 +1205,42 @@ async function route(req, res) {
       const perms = b.perms && typeof b.perms === 'object' ? b.perms : {};
 
       if (!SCOPE_RE.test(scope)) return send(res, 400, { ok: false, error: '工作区标识不合法' });
+
+      /* ── 修复工具：改的是仓库源码，不属于任何账号的 workspace ──
+         所以它走不到下面那条路：root = ensureScope(scope) 会把路径指到用户目录，
+         perms 的四类开关也判不了「能不能改源码」。判定换成「dev 实例 + 维护者」，
+         由 repairKitOpen 一次判完，之后直接进 lib/repairkit.js 翻译成动作。
+         放在「未知工具」之前是必须的：repair_* 不在 TOOL_CATEGORY 里，
+         否则第一句就报「未知工具」——那会让它以为这个功能没上线。 */
+      if (isKit(name)) {
+        if (!internal && !rateOK(req)) return send(res, 429, { ok: false, error: '调用太频繁，缓一下' });
+        const kit = repairKitOpen(req, scope);
+        if (!kit.ok) return send(res, kit.code === 503 ? 503 : 403, { ok: false, code: 'repair_kit_closed', error: kit.why });
+
+        const t0 = Date.now();
+        const out = await runKit(name, args);
+        /* 改源码这个动作必须留痕：一个月后要回答「那版是谁改的」，
+           只有 patch 没有审计是答不出来的。via 一起记——事后能分清
+           是人点的、还是令牌调的。 */
+        writeAudit({
+          kind: 'repair', scope, action: `工具 ${name}`,
+          target: clip(String(args.key || args.sig || args.action || '-'), 200),
+          ok: !!out.ok, blocked: /红线/.test(String(out.error || '')), ms: out.ms,
+          output: clip(out.ok ? out.output : (out.error || ''), 400),
+          via: kit.via || '', ...clientMeta(req)
+        });
+        return send(res, 200, {
+          ok: true, blocked: false,
+          result: {
+            name, ok: !!out.ok, output: String(out.output || ''), ms: out.ms,
+            /* verify 只由 prove/submit 给：红了就是「这一步没生效」，
+               前端会把原因回灌给模型让它接着改——这是它自己纠错的那条回路。 */
+            verify: out.verify || null,
+            key: out.key || '', files: Array.isArray(out.files) ? out.files : []
+          }
+        });
+      }
+
       /* 自定义 HTTP 工具：内置清单里没有的名字，带 custom 描述符就按 net 权限去打接口 */
       const custom = b.custom && typeof b.custom === 'object' ? b.custom : null;
       if (!TOOL_CATEGORY[name] && TOOL_CATEGORY[name] !== 'none' && !(custom && custom.url)) {
