@@ -42,6 +42,15 @@ const DEV_ROOT = path.resolve(arg('root', process.env.REN_DEV_ROOT || path.join(
 const CODE_DIR = path.resolve(arg('dir', APP));
 const PORT = String(arg('port', '8090'));
 
+/* 本地没有「账号」这回事，默认把云端身份校验关掉。
+   不关的结果是本机这套东西用不了：dev 跑在 127.0.0.1，浏览器从云端换到的令牌
+   其 client 就是 `http://127.0.0.1:8090`，它不属于本应用，拿去 whoami 一律
+   invalid_grant。表现出来是「登录态已失效（凭证过期）」——但凭证没过期，是
+   这个入口天生就没有登录态。
+   要验真实的鉴权链路时用 --auth strict：那时页面停在未登录是正确行为。 */
+const AUTH = String(arg('auth', 'off')).toLowerCase() === 'strict' ? 'strict' : 'off';
+const LOCAL = AUTH === 'off';
+
 /* 端口不能是生产口：这里先拦一次，给的是「换个端口」而不是 server 那句更长的解释 */
 if (Number(PORT) === 8080) {
   console.error('\n  8090 之外别用 8080 —— 那是生产端口，dev 抢了它生产就起不来了。\n');
@@ -85,6 +94,9 @@ console.log('  ─────────────────────�
 console.log('  代码：  ' + CODE_DIR);
 console.log('  数据：  ' + DEV_ROOT + (fresh ? '  （新建）' : ''));
 console.log('  监听：  127.0.0.1:' + PORT + '  （只有本机能访问）');
+console.log('  身份：  ' + (LOCAL
+  ? '本地（不问云端；管理员 = 这台机器）'
+  : '严格（按云端凭证，未登录时页面会停在登录态）'));
 console.log('  ────────────────────────────────────────────');
 console.log('  生产数据不在这个目录里，改坏了删掉本目录即可。');
 console.log('');
@@ -96,7 +108,11 @@ const env = {
      留口子——要对外开放就该走发布流程，而不是把开发实例暴露出去。 */
   REN_DEV_INSTANCE: '1',
   HOST: '127.0.0.1',
-  PORT
+  PORT,
+  /* 两个开关一起给：关了校验却不给管理员，页面上看得见工具、一调就 403。
+     它们只在本机生效（HOST 钉在回环），跟着 dev 实例走，不写进任何配置。 */
+  REN_AUTH_MODE: AUTH,
+  ...(LOCAL ? { ADMIN_DEV: '1' } : {})
 };
 
 const child = spawn(process.execPath, ['server.js'], {

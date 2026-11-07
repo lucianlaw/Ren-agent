@@ -166,6 +166,9 @@ function isAdmin(uid) {
 function isAdminScope(scope) {
   const s = String(scope || '');
   if (!s) return false;
+  /* 和 isAdmin 同一口径：本机调试时「浏览器认得出维护者」和「服务端循环认得出
+     维护者」必须是同一个答案，否则会出现「工具在页面上看得见、一调用就 403」。 */
+  if (process.env.ADMIN_DEV === '1') return scopeFor(LOCAL_UID) === s || adminList().some(a => scopeFor(normUid(a)) === s);
   return adminList().some(a => scopeFor(normUid(a)) === s);
 }
 
@@ -375,6 +378,15 @@ const ALS = new AsyncLocalStorage();
    而那时未必来得及走一次完整发布。代价是任何一个环境变量都能把安全关掉，
    所以启动时必须大声喊出来，健康检查里也要能看见它当前是什么档。 */
 const AUTH_MODE = String(process.env.REN_AUTH_MODE || 'strict').toLowerCase() === 'off' ? 'off' : 'strict';
+
+/* 关掉身份校验时用哪个身份。
+   这个串必须是「从云端永远拿不到」的形状，否则本地目录会和某个真实账号撞上。
+   uid 的合法长度是 16-64，所以不能图省事写 'local'——identityOf 会判不合法，
+   前端拿不到 scope，表现是「登录成功但一进去就 400」。
+   为什么本地需要它：dev 实例跑在 127.0.0.1，浏览器从云端换到的令牌 client 是
+   `http://127.0.0.1:8090`，它不属于本应用，拿去问谁都是 invalid_grant。
+   于是 dev 上「登录」这件事，从根上就走不通——不是凭证过期。 */
+const LOCAL_UID = 'local-dev-0000000000';
 
 /* 身份闸门的计数：上线后不打开浏览器也能知道「验签到底通没通」。
    只记次数，不记任何人。看 /api/health 就能读出这三个数。 */
@@ -1018,6 +1030,18 @@ async function route(req, res) {
        之后每个 JS 请求带 Authorization: Bearer <同一张 token> 即可，
        服务端最多 10 分钟问一次云端（缓存），但任何时候都不再采信客户端说的 uid。 */
     if (u.pathname === '/api/session') {
+      /* 身份校验关掉时（dev 实例）不要去问云端。
+         这一条是补上一个自相矛盾的口径：resolveAuth 已经按 legacy 全放行了，
+         而这里仍然拿一张本地令牌去云端换身份，换不回来就 401，前端于是显示
+         「登录态已失效（凭证过期）」——接口全是通的，页面却说你没登录。 */
+      if (AUTH_MODE === 'off') {
+        const id = identityOf(LOCAL_UID);
+        markOwner(id.scope, LOCAL_UID);
+        return send(res, 200, {
+          ok: true, uid: LOCAL_UID, scope: id.scope, fk: fileKey(id.scope),
+          anon: false, cached: false, local: true, claimed: '', mismatch: false
+        });
+      }
       /* 取凭证的顺序：请求体里明确的 token 优先。
          为什么不从 Authorization 头拿：线上反代会给每个请求塞一个自己的
          386 字符 Authorization（客户端一个都没带也照样塞），拿它当用户凭证
