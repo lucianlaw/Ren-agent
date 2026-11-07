@@ -159,6 +159,27 @@ console.log('\n[8] 渲染：dry 不能装成「已经开好了」');
   const t2 = K.__test.renderBegin({ key: 'deadbeefdeadbeef', branch: 'heal/deadbeef', base: 'abcdef1234567', attempt: 2, task: '' }, false);
   ok('真开时打出了分支', /heal\/deadbeef/.test(t2), t2);
   ok('真开时 base 截到 7 位', /abcdef1/.test(t2) && !/abcdef1234567/.test(t2), t2);
+
+  /* 第二类：prove 的 red / green 是对象，直接插模板会变成 [object Object]。
+     第一版就这么发出去过——回执里那两行等于没写，模型看到的是两个 Object。 */
+  const pf = K.__test.renderFinish('prove', { test: 'test/x-test.mjs' }, {
+    ok: true, sha: 'abcdef1234567',
+    proof: {
+      test: 'test/x-test.mjs', strong: true,
+      red: { exit: 1, kind: 'assert', pass: 18, fail: 1 },
+      green: { exit: 0, kind: 'pass', pass: 19, fail: 0 }
+    }
+  });
+  ok('prove 回执里没有 [object Object]', !/\[object Object\]/.test(pf), pf);
+  ok('改之前报了失败数', /1 失败/.test(pf), pf);
+  ok('改之后报了 0 失败', /0 失败/.test(pf), pf);
+
+  /* 弱红必须说出来：它只证明「原来没这个东西」，不证明「当时是坏的」。 */
+  const weak = K.__test.renderFinish('prove', { test: 'x' }, {
+    ok: true,
+    proof: { strong: false, red: { kind: 'load', fail: 1, pass: 0 }, green: { kind: 'pass', fail: 0, pass: 1 } }
+  });
+  ok('弱红要明说（不然复核的人以为红是修出来的）', /弱红/.test(weak), weak);
 }
 
 console.log('\n[9] 工具定义里点名了红线文件');
