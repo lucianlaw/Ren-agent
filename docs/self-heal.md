@@ -149,6 +149,38 @@ npm run dev -- --dir ../.ren-dev/work # 跑 worktree 里那一份（第二步做
 想验真实的鉴权链路就用 `npm run dev -- --auth strict`，
 那时页面停在未登录是**正确行为**，不是坏了。
 
+**登录通了，还差一层：模型凭证**
+
+登录解决的是「谁在用这个站点」，模型调用要的是另一件东西：
+一张**本应用签发**的 access_token。本地换到的那张，其 client 是
+`http://127.0.0.1:8090`，通道回的原文是 `invalid_grant`，含义是
+"expired **or issued for another client**"——查一下 JWT 里的 `exp` 还剩两小时，
+就知道不是过期，是后者。于是本地能进界面、能调工具，**一发起任务就被拒**。
+
+这不是配置漏了，是那个入口天生没有登录态。要在这里真跑任务，只能绕开托管通道：
+
+```
+REN_LLM_DIRECT=1 \
+REN_LLM_BASE=https://api.deepseek.com/v1 \
+REN_LLM_KEY=sk-… \
+REN_LLM_MODEL=deepseek-chat \
+node scripts/dev.mjs
+```
+
+四个变量各自管一件事，都不是可选的：
+
+| 变量 | 管什么 | 猜错的后果 |
+|---|---|---|
+| `REN_LLM_DIRECT` | 切到直连档（路径/鉴权/模型名三处一起换） | 不设 = 还打 `.cloud/llm/…`，404 |
+| `REN_LLM_BASE` | 对方基址，**到 `/v1` 为止** | 少了 `/v1` 会 404 |
+| `REN_LLM_KEY` | 当 bearer 用的 API key | 空着 = 直连档发不出去（会明说缺 key，不让你去重新登录） |
+| `REN_LLM_MODEL` | 对方家的模型 id | 用界面选的 id 会 `model_not_found` |
+
+边界要说清：直连档换的只有**「怎么把话说出去」**，SSE 解析、错误翻译、用量上报全不变；
+身份、权限、工具表一个字节都不碰。默认关着，线上不设 `REN_LLM_DIRECT` 就还是托管通道。
+
+key 只从环境变量读，不从命令行参数读——写进命令行会落进 shell 历史。
+
 ## 六、工单：从「统计」到「能被领取的任务」
 
 `/api/incidents` 给的是**事实**（现算的统计），`/api/tickets` 给的是**事实 + 状态**。

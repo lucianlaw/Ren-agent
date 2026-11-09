@@ -25,7 +25,7 @@ import { runAfterEdit } from './lib/selftest.js';
 import { SCOPE_RE, scopeRoot, ensureScope, listFiles, readTextFile, inside, WORKSPACE_BASE, markOwner, ownerOf } from './lib/workspace.js';
 import { identityOf, normUid, scopeFor } from './lib/identity.js';
 import { verifyToken, fileKey, checkFileKey, warmSecret } from './lib/authn.js';
-import { jwtInfo } from './lib/llm.js';
+import { jwtInfo, directLLM } from './lib/llm.js';
 import { effectivePerms, savePerms, loadPerms, DEFAULT_PERMS } from './lib/perms.js';
 import { migrateScope } from './lib/migrate.js';
 import {
@@ -388,6 +388,9 @@ const AUTH_MODE = String(process.env.REN_AUTH_MODE || 'strict').toLowerCase() ==
    于是 dev 上「登录」这件事，从根上就走不通——不是凭证过期。 */
 const LOCAL_UID = 'local-dev-0000000000';
 
+/* 直连档（见 lib/llm.js 的注释）。默认关着；线上不设 REN_LLM_DIRECT 就一个字节都不变。 */
+const DIRECT = directLLM();
+
 /* 身份闸门的计数：上线后不打开浏览器也能知道「验签到底通没通」。
    只记次数，不记任何人。看 /api/health 就能读出这三个数。 */
 const AUTH_STATS = { verified: 0, fk: 0, rejected: 0, lastCode: '' };
@@ -595,6 +598,17 @@ function getToken(uid) {
   if (!v) return '';
   if (Date.now() - v.at > TOKEN_TTL) { TOKENS.delete(String(uid || '').trim()); return ''; }
   return v.token;
+}
+
+/* 模型凭证：正常是「这个工作区的用户 access_token」。
+   直连档没有用户 token 可用（本地就没登录态），用配置里的 API key 顶上。
+   不这么接的话，整个循环第一步就撞在「没有模型凭证，请重新登录」上——
+   而那句话在直连场景是**误导**：凭证不是没拿到，是它本来就不该从用户身上来。 */
+function modelToken(scope) {
+  /* 直连档只有一个凭证来源，不让浏览器那张覆盖：
+     否则「页面上带着本地令牌、配置里带着 API key」两处在打，出问题时分不清是谁在发。 */
+  if (DIRECT.on) return DIRECT.key;
+  return getToken(scope);
 }
 
 /* ── 看图用的视觉模型（按工作区记最近一次）──
@@ -1311,9 +1325,9 @@ async function route(req, res) {
           /* 看图要自己再调一次模型：凭证和端点在这一层拿，不下发给前端。
              模型名只认任务发起时记下的那个，不由工具参数决定——
              工具参数是模型写的，让它挑模型等于让它挑花哪条通道。 */
-          llm: (name === 'view_image' && getToken(scope))
+          llm: (name === 'view_image' && modelToken(scope))
             ? {
-              endpoint: cloudEndpoint(), token: getToken(scope), accessKey: cloudKey(),
+              endpoint: cloudEndpoint(), token: modelToken(scope), accessKey: cloudKey(),
               models: visionModelsOf(scope), model: visionModelOf(scope)
             }
             : null
@@ -1474,11 +1488,14 @@ async function route(req, res) {
       /* 看图模型跟着这次任务记下来：view_image 在 /api/tool 里要用，
          而那条请求里不会带模型名（模型不能自己指定通道） */
       if (b.visionModels || b.visionModel) setVisionModel(scope, b.visionModels || b.visionModel);
-      const token = getToken(scope);
+      const token = modelToken(scope);
       if (!token) {
         return send(res, 401, {
           ok: false, code: 'no_token',
-          error: '服务端还没拿到模型凭证，请刷新页面重新登录后再发起'
+          /* 直连档缺 key 和「登录态没了」是两回事，混成一句话会让人去刷新页面——刷一百次也没用 */
+          error: DIRECT.on
+            ? '直连档没有配模型 key（REN_LLM_KEY 为空），这一步发不出去'
+            : '服务端还没拿到模型凭证，请刷新页面重新登录后再发起'
         });
       }
 
@@ -1574,16 +1591,21 @@ async function route(req, res) {
          顺序反过来的话有个很窄但真实的竞态：任务可能在我写这条记录之前就结束了
          （起手就报错的那种），onEnd 更新不到任何行，随后 runBegin 又插进一条
          status=running —— 那条记录会一直挂着，界面上是一个永远不动的任务。 */
+      /* 直连档的模型名是对方家的 id（deepseek-chat / moonshot-v1-8k …），
+         而前端选的是托管通道的 id。这里以配置为准，不让界面上的选择把它顶掉——
+         顶掉的结果是对方回 model_not_found，看着像「通道挂了」。 */
+      const modelId = (DIRECT.on && DIRECT.model) ? DIRECT.model : (job.model || '');
+
       state.runBegin({
         id: runId, scope, uid: (currentAuth() && currentAuth().uid) || scope,
-        title: String(task.goal || '').slice(0, 200), device, model: job.model || ''
+        title: String(task.goal || '').slice(0, 200), device, model: modelId
       });
 
       try {
         run = startRun({
           id: runId, scope, uid: (currentAuth() && currentAuth().uid) || scope,
           task, staff: job.staff || null, settings,
-          model: job.model || '', judge: job.judge || null,
+          model: modelId, judge: job.judge || null,
           followUp: job.followUp || '', followUpImages: job.followUpImages || [],
           base, sharecode: sc, internal: INTERNAL,
           token, accessKey: cloudKey(), endpoint: cloudEndpoint(), tools: job.tools || [],

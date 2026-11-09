@@ -97,6 +97,17 @@ console.log('  监听：  127.0.0.1:' + PORT + '  （只有本机能访问）');
 console.log('  身份：  ' + (LOCAL
   ? '本地（不问云端；管理员 = 这台机器）'
   : '严格（按云端凭证，未登录时页面会停在登录态）'));
+/* 直连档只从环境变量读，不从命令行读：KEY 写进命令行会落进 shell 历史。 */
+const DIRECT_ON = /^(1|true|yes|on)$/i.test(String(process.env.REN_LLM_DIRECT || ''));
+console.log('  模型：  ' + (DIRECT_ON
+  ? '直连 ' + (process.env.REN_LLM_BASE || '(缺 REN_LLM_BASE)')
+    + ' · ' + (process.env.REN_LLM_MODEL || '(缺 REN_LLM_MODEL)')
+    + (process.env.REN_LLM_KEY ? '' : ' · 缺 REN_LLM_KEY')
+  : '托管通道（凭证必须是本应用签发的）'));
+if (LOCAL && !DIRECT_ON) {
+  console.log('  注意：  本地拿到的令牌 client 是 127.0.0.1，托管通道不认它，任务一发起就会被拒。');
+  console.log('          要在这里跑任务，加 REN_LLM_DIRECT=1 + REN_LLM_BASE + REN_LLM_KEY + REN_LLM_MODEL。');
+}
 console.log('  ────────────────────────────────────────────');
 console.log('  生产数据不在这个目录里，改坏了删掉本目录即可。');
 console.log('');
