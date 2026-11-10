@@ -25,3 +25,15 @@ build.json
 # 本地运行时日志
 nohup.out
 *.out
+
+# 本机维护者名单。admins.json 在仓库里只是空模板，真名单放这里
+admins.local.json
+
+# WorkBuddy 的工作区记忆，属于本机，不属于这个项目
+.workbuddy/
+
+# 平台应用标记：里面有本机绝对路径
+*.genie
+
+# 本地幻灯片工具日志
+.slidep/

@@ -143,9 +143,14 @@ const UPLOAD_EXT = new Set(['.pdf', '.docx', '.xlsx', '.pptx', '.csv', '.txt', '
    这里只是「别让人看见」和「别让人误用」。 */
 const ADMIN_FILE = path.join(__dirname, 'admins.json');
 
+/* 公开仓库里 admins.json 只是空模板，真名单放 admins.local.json（已进 .gitignore）。
+   有本地文件就用它，没有就退回模板——clone 下来的人不必改代码，也不会误把真名单提交上去。 */
+const LOCAL_ADMIN_FILE = path.join(__dirname, 'admins.local.json');
+const ADMIN_SOURCE = fs.existsSync(LOCAL_ADMIN_FILE) ? LOCAL_ADMIN_FILE : ADMIN_FILE;
+
 function adminList() {
   try {
-    const j = JSON.parse(fs.readFileSync(ADMIN_FILE, 'utf8'));
+    const j = JSON.parse(fs.readFileSync(ADMIN_SOURCE, 'utf8'));
     const list = Array.isArray(j.admins) ? j.admins : [];
     /* 云库里的 owner_id 是 wu:<id>，前端 session.user.id 可能不带前缀，两边都归一 */
     return list.map(s => String(s || '').trim().replace(/^wu:/, '')).filter(Boolean);
