@@ -21,14 +21,29 @@ const P = (n) => path.relative(tmp, W(n));
 
 console.log('[1] run_shell 的退出码必须真的拦住失败');
 {
-  const real = await runTool('run_shell', { command: 'exit 3' }, { workspace: tmp });
-  ok('真实跑 exit 3 时工具带出结构化退出码 3', real.code === 3, `code=${real.code}`);
-  const v = verifyStep('run_shell', { command: 'exit 3' }, real, tmp);
-  ok('端到端：exit 3 被判失败（回归：以前判通过）', v.pass === false, v.why);
+  /* 「能真的跑」不是普适前提，是这台机器给不给隔离的结果：
+     root 可降权 → uid-split；有 bwrap → namespace；两样都没有 → 拒绝执行。
+     Linux 非 root（GitHub runner 就是这一档）落在最后一类。
+     所以先探一次再决定断言哪一侧——把平台差异显式化，而不是靠「我本机是 mac」蒙过去。 */
+  const probe = await runTool('run_shell', { command: 'true' }, { workspace: tmp });
+  const canExec = probe.ok === true && probe.code === 0;
 
-  const good = await runTool('run_shell', { command: 'echo hi' }, { workspace: tmp });
-  ok('真实跑 echo 时退出码 0', good.code === 0, `code=${good.code}`);
-  ok('端到端：echo 被判通过', verifyStep('run_shell', {}, good, tmp).pass === true);
+  if (canExec) {
+    const real = await runTool('run_shell', { command: 'exit 3' }, { workspace: tmp });
+    ok('真实跑 exit 3 时工具带出结构化退出码 3', real.code === 3, `code=${real.code}`);
+    const v = verifyStep('run_shell', { command: 'exit 3' }, real, tmp);
+    ok('端到端：exit 3 被判失败（回归：以前判通过）', v.pass === false, v.why);
+
+    const good = await runTool('run_shell', { command: 'echo hi' }, { workspace: tmp });
+    ok('真实跑 echo 时退出码 0', good.code === 0, `code=${good.code}`);
+    ok('端到端：echo 被判通过', verifyStep('run_shell', {}, good, tmp).pass === true);
+  } else {
+    /* 没有隔离能力时，产品必须「拒绝执行」而不是照跑——这本身是一条要守的线。
+       而且拒绝必须一路传到判定层：不能因为「没跑成」就被判成通过。 */
+    ok('无隔离的机器上：命令被拒绝，而不是照跑', probe.ok === false && probe.blocked === true, probe.output);
+    ok('被拒绝的命令不会被判通过', verifyStep('run_shell', { command: 'true' }, probe, tmp).pass === false);
+    console.log('  · 跳过 3 条真实执行断言：' + String(probe.output || probe.reason || '').slice(0, 70));
+  }
 
   /* 三级兜底：结构化 → 正文 'exit N' → 中文「退出码：N」 */
   ok('只有正文 exit 1 也能判失败', verifyStep('run_shell', {}, { ok: true, output: 'exit 1\nboom' }, tmp).pass === false);

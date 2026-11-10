@@ -33,8 +33,29 @@ jobs:
           node-version: '22'
 
       # 项目零依赖，没有 npm ci 这一步。跑 install 只会多花 20 秒并失败。
+
+      # runner 是非 root 的 Linux，也没有 bwrap —— 隔离探测会落在「none」，
+      # 于是 run_shell 按设计拒绝执行。这件事必须写在日志最前面，
+      # 否则下一次「本机能过、CI 不过」又得从头猜。同时也是本机没有的能力自述。
+      - name: 环境自述（隔离能力）
+        run: |
+          node -e "import('./lib/sandbox.js').then(m=>{const r=m.probeRuntime();
+            console.log('platform :', r.platform);
+            console.log('root     :', r.root);
+            console.log('mode     :', r.mode);
+            console.log('why      :', r.why || '(无)');
+          })"
+
+      # 逐个文件跑，失败时打一行 ::error:: —— 这样失败点会出现在 checks 注解里，
+      # 不必下载日志才能知道红在哪个文件。npm test 一次跑完只在末尾报 exit 1。
       - name: 全量测试
-        run: npm test
+        run: |
+          for f in test/*.mjs; do
+            if ! node "$f"; then
+              echo "::error file=$f::$(basename "$f") 失败"
+              exit 1
+            fi
+          done
 
       - name: 发布闸门（只跑门，不写 build.json）
         run: node scripts/release.mjs --check
