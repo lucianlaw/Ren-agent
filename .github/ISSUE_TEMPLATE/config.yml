@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞
+    url: https://github.com/lucianlaw/Ren-agent/security/advisories/new
+    about: 涉及越权、围栏绕过、密钥泄露的，走这里，不要开公开 issue
+  - name: 先读贡献指南
+    url: https://github.com/lucianlaw/Ren-agent/blob/main/CONTRIBUTING.md
+    about: 怎么起 dev、改之前必读什么、PR 要交什么

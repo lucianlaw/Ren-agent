@@ -37,3 +37,6 @@ admins.local.json
 
 # 本地幻灯片工具日志
 .slidep/
+
+# 内部产物：从实现反推的 PRD 还没决定要不要公开，先留在本机
+docs/PRD-ren-agent.md

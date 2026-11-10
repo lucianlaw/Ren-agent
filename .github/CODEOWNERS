@@ -1,0 +1,13 @@
+# 这些文件里放的不是代码，是「判断」
+# 改它们等于改规则：围栏在哪、红绿怎么判、谁能开工作区、谁能发布。
+# 不阻止你改，但必须过维护者复核 —— 否则「agent 不能自己宣布通过」这条就白写了。
+
+/lib/repair.js    @lucianlaw
+/lib/proof.js     @lucianlaw
+/lib/ticket.js    @lucianlaw
+/lib/sandbox.js   @lucianlaw
+/lib/tools.js     @lucianlaw
+/server.js        @lucianlaw
+/scripts/release.mjs @lucianlaw
+/.github/         @lucianlaw
+/admins.json      @lucianlaw

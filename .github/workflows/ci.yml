@@ -1,0 +1,49 @@
+name: ci
+
+# 这个 workflow 只干一件事：让「能不能合」不取决于维护者当时有没有空。
+# 五道发布闸门原本跑在维护者本机（scripts/release.mjs），PR 进来时没人替你跑。
+# 所以这里把它搬进容器 —— 同一份脚本、同一个结论，谁按都一样。
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: 全量测试 + 发布闸门
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # release.mjs 要读完整历史判断工作区状态，浅克隆会误判
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 项目零依赖，没有 npm ci 这一步。跑 install 只会多花 20 秒并失败。
+      - name: 全量测试
+        run: npm test
+
+      - name: 发布闸门（只跑门，不写 build.json）
+        run: node scripts/release.mjs --check
+
+      - name: 密钥与运行时数据不该被提交
+        run: |
+          bad=$(git ls-files | grep -E '^(data/|\.ren-secrets/|\.ren-state/|build\.json|admins\.local\.json)|\.genie$' || true)
+          if [ -n "$bad" ]; then
+            echo "这些文件不该进仓库："
+            echo "$bad"
+            exit 1
+          fi

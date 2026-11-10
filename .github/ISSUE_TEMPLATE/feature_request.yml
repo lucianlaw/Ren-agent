@@ -1,0 +1,61 @@
+name: feature
+description: 想要一个现在没有的能力，或者觉得某个设计该改
+labels: [feature, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        这个项目对「加功能」比一般项目更保守：大部分能力缺口不是缺代码，是缺一条能被校验的判定。
+        所以先说清楚**你想解决的问题**，而不是你想要的那个按钮。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你现在卡在哪
+      description: 描述场景，不要描述方案。方案留到下一栏
+      placeholder: 我有 30 个员工，每次新建都要重填一遍人设，想不出来怎么批量
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你想到的做法
+      description: 有就写，没有就写「没想到」。空着比编一个强
+    validations:
+      required: false
+
+  - type: textarea
+    id: judgment
+    attributes:
+      label: 这个能力怎么算「做对了」
+      description: |
+        这是最关键的一栏。这个项目的原则是「模型说做完了不算数，文件真的在才算」，
+        所以任何新能力都要能回答：什么条件下它通过、什么条件下它失败。
+        如果答不出来，这个功能大概不该加。
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 大概动哪一块
+      options:
+        - 不确定
+        - 前端（public/）
+        - 服务端（server.js）
+        - 工具执行（lib/tools.js、lib/sandbox.js）
+        - 模型通道（lib/llm.js）
+        - 自愈链路（lib/repair.js、lib/proof.js、lib/ticket.js）
+        - 部署与闸门（scripts/）
+        - 文档
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我搜过现有 issue，没有重复的
+          required: true

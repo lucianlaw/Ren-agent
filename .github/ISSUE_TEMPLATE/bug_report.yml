@@ -1,0 +1,81 @@
+name: bug
+description: 有东西坏了、报错了、行为和文档不一致
+labels: [bug, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        修之前先说清楚三件事：**你在哪跑的、怎么复现、哪里不对**。
+        缺任何一件，这个单都只能挂着——不是为了走流程，是因为复现不了就判断不了。
+
+  - type: dropdown
+    id: where
+    attributes:
+      label: 你跑在哪
+      description: 这两种环境的判据完全不同，选错了排查方向就反了
+      options:
+        - 本地 dev（npm run dev）
+        - 本地直接 node server.js
+        - 平台部署的线上实例
+        - 测试（node test/xxx.mjs）
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: package.json 里的 version，或者线上 build.json 里的 commit
+      placeholder: 0.8.22
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 怎么复现
+      description: 按顺序写，能照着点出来的程度。第几步开始不对就标出来
+      placeholder: |
+        1. npm run dev
+        2. 新建员工，模型选 X
+        3. 发任务「…」
+        4. 第 3 步之后任务卡在 running
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 你以为会怎样
+      description: 期望值和实际值的差距，就是「bug」这个判断的全部依据
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际发生了什么
+      description: 报错原文贴全，别只贴最后一行——栈顶那几行才指得出文件
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 证据
+      description: |
+        截图、日志片段、`data/alerts` 或 `data/incidents` 里对应的那一条。
+        **贴之前把 token、uid、API Key 抹掉**——这个仓库是公开的。
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我搜过现有 issue，没有重复的
+          required: true
+        - label: 我贴的内容里没有密钥、令牌、真实用户 id
+          required: true

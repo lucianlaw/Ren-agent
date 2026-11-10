@@ -30,6 +30,14 @@ node server.js            # 默认 http://127.0.0.1:4319
 
 本机只能看界面：云服务的数据面会校验请求来源，只接受**已发布域名**。登录、存数据、调模型都要在线上域名里验证——这是平台边界，不是 bug。
 
+要真改代码，用 dev 实例（独立端口、独立数据目录、只绑回环）：
+
+```bash
+npm run dev              # http://127.0.0.1:8090，数据落在 ../.ren-dev/
+```
+
+改之前请先读 [CONTRIBUTING.md](CONTRIBUTING.md)——那里有三条不该踩的线（判定不在工具里、红→绿缺一不可、谁都不能自证通过），以及一次修改从挑 issue 到 PR 的完整走法。
+
 ## 线上部署
 
 ```bash
@@ -43,20 +51,21 @@ PORT=8080 node server.js
 
 ## 发布与回滚
 
-发布不是一个动作，是四道门后面接一次上传。门在 `scripts/release.mjs` 里：
+发布不是一个动作，是五道门后面接一次上传。门在 `scripts/release.mjs` 里（越便宜越先，前三道都是零成本的静态检查）：
 
 ```bash
 node scripts/release.mjs --check    # 只跑门，不写文件
-node scripts/release.mjs            # 跑完四道门，写 build.json
+node scripts/release.mjs            # 跑完五道门，写 build.json
 ```
 
 1. **工作区必须干净**——否则线上跑的东西对应不到一个 commit，「回滚到上一版」没有落点。
 2. **部署目录不许有密钥文件**——上传是把整个目录压包，密钥会一起到线上。
-3. **全量测试必须通过**——闸门替人记，不靠人记。
-4. **产物冒烟**——把将要上传的那一份单独跑起来（独立端口、独立密钥与数据目录），
+3. **部署目录不许有运行时数据**——同上，而且它会在线上装成生产数据（假工单、别人的 workspace）。
+4. **全量测试必须通过**——闸门替人记，不靠人记。
+5. **产物冒烟**——把将要上传的那一份单独跑起来（独立端口、独立密钥与数据目录），
    确认它能启动、`/api/health` 应答、版本标记对得上。起不来就不发。
 
-四道都过之后才写 `build.json`（commit / 分支 / 时间 / 版本号），这个文件随发布上传，
+五道都过之后才写 `build.json`（commit / 分支 / 时间 / 版本号），这个文件随发布上传，
 `/api/health` 里的 `build` 字段就是它。**线上 `build` 显示「未标记」= 有人直接传了文件夹。**
 
 ### 为什么没有 staging 环境
@@ -429,6 +438,16 @@ node scripts/restore.mjs --file ren-....tar.gz --yes   # 真的恢复
   一台机器仍然可能被一个账号算力吃满。没有隔离能力时 `run_shell` 直接拒绝，不会假装安全地照跑。
 - **还没有项目级共享记忆**：项目结论散在各任务的产出里，换个员工接手同一项目还得重新讲一遍。
 - **Windows 没测过**：`run_shell` 走 `/bin/sh`，仓库功能依赖系统 git。
+
+## 参与
+
+任何人都可以改，只有维护者可以发——这不是权限游戏，是「能回滚」的前提。
+
+1. 先看 [CONTRIBUTING.md](CONTRIBUTING.md)，特别是那三条线。
+2. 从 [issues](https://github.com/lucianlaw/Ren-agent/issues) 里挑一个，或者开一个说清复现路径。安全相关的走 [Security Advisories](https://github.com/lucianlaw/Ren-agent/security/advisories/new)，不要开公开 issue。
+3. 本地 `npm run dev`，先写一个会失败的测试，改到它绿。
+4. `npm test` + `node scripts/release.mjs --check` 都过，再开 PR——CI 会替你重跑一遍。
+5. PR 里必须有「改之前红、改之后绿」两段输出。没有这份证据，代码看起来再对也合不进去。
 
 ## License
 
