@@ -125,7 +125,14 @@ try {
       eq('码对', r.code, 'E_NET');
       eq('层标成 client', r.layer, 'client');
       ok('有签名', typeof r.sig === 'string' && r.sig.startsWith('E_NET|'), r.sig);
-      ok('带版本与 commit（线上是哪个版本犯错，这条是唯一依据）', !!r.v && !!r.commit, { v: r.v, commit: r.commit });
+      /* build.json 是发布产物，不进仓库（.gitignore）。clone 下来跑测试时它一定不在，
+         那时「版本为空」是正确状态，不是缺陷——所以这里只要求字段存在。
+         但发布过的实例必须填上值：否则线上出事时没人说得出是哪个版本犯的错。 */
+      ok('带版本与 commit 字段（线上是哪个版本犯错，这条是唯一依据）',
+        typeof r.v === 'string' && typeof r.commit === 'string', { v: r.v, commit: r.commit });
+      if (fs.existsSync(path.join(APP, 'build.json'))) {
+        ok('已发布的实例，版本与 commit 必须有值', !!r.v && !!r.commit, { v: r.v, commit: r.commit });
+      }
       ok('带本机时间戳', !!r.at, r.at);
     }
 

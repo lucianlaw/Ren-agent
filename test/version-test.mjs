@@ -71,10 +71,18 @@ console.log('\n[5] 接线：闸门真的用这一份，而不是又抄了一遍'
   ok('build.json 记的版本来自 package.json', /version: \(\(\) => \{[\s\S]{0,200}package\.json[\s\S]{0,80}version/.test(rel), '');
 
   const pkg = JSON.parse(fs.readFileSync(path.join(APP, 'package.json'), 'utf8'));
-  const build = JSON.parse(fs.readFileSync(path.join(APP, 'build.json'), 'utf8'));
-  /* 允许「已手动升过、还没发布」的状态：package 必须 ≥ build */
-  ok('package.json 版本不低于上次发布记录的版本',
-    V.verCmp(pkg.version, build.version) >= 0, { pkg: pkg.version, build: build.version });
+  /* build.json 是发布产物，不进仓库。干净 clone 里没有它，这条就跳过——
+     不能改成「缺失也当通过」，那是把「线上 build 显示未标记 = 有人直接传了文件夹」
+     这条纪律从测试里抹掉。它一旦存在，就必须严格校验。 */
+  const buildPath = path.join(APP, 'build.json');
+  if (fs.existsSync(buildPath)) {
+    const build = JSON.parse(fs.readFileSync(buildPath, 'utf8'));
+    /* 允许「已手动升过、还没发布」的状态：package 必须 ≥ build */
+    ok('package.json 版本不低于上次发布记录的版本',
+      V.verCmp(pkg.version, build.version) >= 0, { pkg: pkg.version, build: build.version });
+  } else {
+    console.log('  · 没有 build.json（没发布过的干净仓库），跳过版本对齐校验');
+  }
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败`);
